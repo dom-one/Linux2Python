@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windows-to-linux"
+version = "0.1.0"
+description = "在 Windows 上提供类 Linux 命令行工具，统一入口 python main.py <指令> <参数>"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+w2l = "w2l.cli:main"
+
+[tool.setuptools]
+packages = ["w2l", "w2l.commands"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
