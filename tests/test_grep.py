@@ -169,11 +169,23 @@ def test_stdin_count():
     assert out == "1\n"
 
 
-def test_no_path_and_no_stdin_raises():
+def test_no_path_reads_stdin_like_gnu_grep():
     namespace = build_parser().parse_args(["warn"])
-    ctx = RunContext(cwd=None, stdout=io.StringIO(), stderr=io.StringIO(), stdin=_Tty())
-    with pytest.raises(UsageError):
-        grep(namespace, ctx)
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(cwd=None, stdout=out, stderr=err, stdin=io.StringIO("warn here\n"))
+    code = grep(namespace, ctx)
+    assert code == 0
+    assert out.getvalue() == "warn here\n"
+
+
+def test_no_path_on_terminal_prints_hint():
+    namespace = build_parser().parse_args(["warn"])
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(cwd=None, stdout=out, stderr=err, stdin=_Tty())
+    code = grep(namespace, ctx)
+    assert code == 1
+    assert out.getvalue() == ""
+    assert "标准输入" in err.getvalue()
 
 
 def test_crlf_line_endings(tmp_path):

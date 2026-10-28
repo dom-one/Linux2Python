@@ -53,14 +53,15 @@ class CommandError(Exception):
 
 ### 第 1 步：看清当前 `grep` 在哪里抛 `UsageError`
 
-`w2l/commands/grep.py` 里有四处：
+`w2l/commands/grep.py` 里有三处：
 
 | 位置 | 触发条件 | 消息 |
 |---|---|---|
-| `grep.py:70` | 没给文件，且 stdin 是终端 | `没有指定文件，且标准输入不是终端，无法确定搜索目标` |
-| `grep.py:82` | 给了目录但没加 `-r` | `{path}: 是一个目录，请加 -r 递归搜索` |
-| `grep.py:105` | 正则编译失败 | `无效的正则表达式 '{pattern}': {exc}` |
-| `_translate_bre` 内 | 模式以孤立反斜杠结尾 | 经 `re.error` 转换后同样走 `grep.py:105` |
+| `grep.py:72` | 没给文件，且没有可读的标准输入 | `没有指定文件，也没有可读取的标准输入` |
+| `grep.py:87` | 给了目录但没加 `-r` | `{path}: 是一个目录，请加 -r 递归搜索` |
+| `grep.py:110` | 正则编译失败 | `无效的正则表达式 '{pattern}': {exc}` |
+
+`_translate_bre` 内部抛的 `re.error`（模式以孤立反斜杠结尾）在 `_compile_regex` 里被转成 `UsageError`，走 `grep.py:110` 那条。
 
 跑一遍看效果：
 

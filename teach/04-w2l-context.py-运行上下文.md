@@ -131,7 +131,7 @@ cd E:\1\NULL\Windows-to-Linux
 python -m pytest -q
 ```
 
-预期：31 passed（现有用例都用 `tmp_path` 的绝对路径）。
+预期：35 passed（现有用例都用 `tmp_path` 的绝对路径）。
 
 ### 第 5 步：`ctx.stdin` 的一个特殊约定
 
@@ -139,11 +139,16 @@ python -m pytest -q
 
 ```python
 stdin_mode = not args.paths
-if stdin_mode and (ctx.stdin is None or ctx.stdin.isatty()):
-    raise UsageError("没有指定文件，且标准输入不是终端，无法确定搜索目标")
+if stdin_mode and ctx.stdin is None:
+    raise UsageError("没有指定文件，也没有可读取的标准输入")
+if stdin_mode and ctx.stdin.isatty():
+    ctx.stderr.write("未指定文件，从标准输入读取（Windows 下按 Ctrl+Z 后回车结束）。\n")
+    ctx.stderr.write('要搜索当前目录：python main.py grep -r "PATTERN" .\n')
 ```
 
-真实终端的 `sys.stdin.isatty()` 返回 `True`（是交互式终端，不该被当作输入源），管道重定向时返回 `False`。测试里因为用了 `io.StringIO`（`isatty()` 默认返回 `False`），所以 `run_grep(["warn"], stdin_text="ok\nwarn here\n")` 会走 stdin 分支；而要测「不给文件且 stdin 是终端」这个错误路径，需要 `tests/conftest.py` 里那个 `_Tty` 类：
+不给文件路径时从标准输入读，这是 GNU grep 的行为，不是本项目自己定的。真实终端的 `sys.stdin.isatty()` 返回 `True`（交互式终端，输入要等用户敲完），管道重定向时返回 `False`。
+
+终端分支只打印提示，不报错——报错会让用户以为命令用错了，而 GNU 在终端下是等待输入。测试里因为用了 `io.StringIO`（`isatty()` 默认返回 `False`），所以 `run_grep(["warn"], stdin_text="ok\nwarn here\n")` 会走 stdin 分支；要测「终端分支」需要 `tests/conftest.py` 里那个 `_Tty` 类：
 
 ```python
 class _Tty(io.StringIO):
@@ -153,10 +158,10 @@ class _Tty(io.StringIO):
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
-python -m pytest -q tests/test_grep.py::test_no_path_and_no_stdin_raises
+python -m pytest -q tests/test_grep.py::test_no_path_on_terminal_prints_hint
 ```
 
-预期：通过。用法是 `pytest.raises(UsageError)`。
+预期：通过。断言 stderr 里含「标准输入」，且 stdout 为空、退出码 1（没有输入就没有命中）。
 
 ### 第 6 步：真实管道也能搜
 

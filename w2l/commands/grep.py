@@ -68,8 +68,11 @@ def grep(args: argparse.Namespace, ctx: RunContext) -> int:
     regex = _compile_regex(args)
 
     stdin_mode = not args.paths
-    if stdin_mode and (ctx.stdin is None or ctx.stdin.isatty()):
-        raise UsageError("没有指定文件，且标准输入不是终端，无法确定搜索目标")
+    if stdin_mode and ctx.stdin is None:
+        raise UsageError("没有指定文件，也没有可读取的标准输入")
+    if stdin_mode and ctx.stdin.isatty():
+        ctx.stderr.write("未指定文件，从标准输入读取（Windows 下按 Ctrl+Z 后回车结束）。\n")
+        ctx.stderr.write('要搜索当前目录：python main.py grep -r "PATTERN" .\n')
 
     show_prefix = args.recursive or len(args.paths) > 1
     matched_any = False

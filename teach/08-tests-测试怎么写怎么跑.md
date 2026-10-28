@@ -1,6 +1,6 @@
 # tests/ — 测试怎么写怎么跑
 
-`tests/` 目录只有两个文件：`conftest.py`（测试脚手架）和 `test_grep.py`（31 个用例）。用的是 pytest。
+`tests/` 目录只有两个文件：`conftest.py`（测试脚手架）和 `test_grep.py`（35 个用例）。用的是 pytest。
 
 ## 为什么这么创建
 
@@ -59,19 +59,19 @@
 | `run_grep(argv, cwd=None, stdin_text="")` | 函数 | 跑一次 grep，返回 `(退出码, stdout, stderr)` |
 | `sample_tree` | fixture | 造出 `app.log` / `notes.txt` / `sub/deep.txt` 三个文件 |
 
-`tests/test_grep.py` 是 31 个用例，按行为分组：
+`tests/test_grep.py` 是 35 个用例，按行为分组：
 
 | 组 | 用例 |
 |---|---|
 | 基础匹配 | `test_basic_match`、`test_no_match_returns_one` |
 | 单选项 | `test_ignore_case`、`test_invert_match`、`test_line_number` |
 | 递归 | `test_recursive_with_prefix` |
-| 错误路径 | `test_directory_without_recursive_is_usage_error`、`test_trailing_backslash_is_usage_error`、`test_invalid_regex_is_usage_error`、`test_missing_file_reports_error`、`test_no_path_and_no_stdin_raises` |
+| 错误路径 | `test_directory_without_recursive_is_usage_error`、`test_trailing_backslash_is_usage_error`、`test_invalid_regex_is_usage_error`、`test_missing_file_reports_error` |
 | BRE / ERE | `test_extended_regexp`、`test_basic_regexp_treats_pipe_as_literal`、`test_basic_regexp_escaped_alternation`、`test_basic_regexp_escaped_group`、`test_basic_regexp_treats_plus_as_literal` |
 | 汇总类选项 | `test_word_regexp`、`test_count`、`test_count_multiple_files_prefixed`、`test_files_with_matches`、`test_only_matching`、`test_only_matching_with_line_number` |
 | 二进制 | `test_binary_file_message`、`test_binary_file_listed_with_l` |
-| 标准输入 | `test_stdin_search`、`test_stdin_count` |
-| 编码 / 行尾 | `test_crlf_line_endings`、`test_gbk_encoding` |
+| 标准输入 | `test_stdin_search`、`test_stdin_count`、`test_no_path_reads_stdin_like_gnu_grep`、`test_no_path_on_terminal_prints_hint` |
+| 编码 / 行尾 | `test_crlf_line_endings`、`test_gbk_encoding`、`test_gbk_encoding_on_non_chinese_locale`、`test_utf8_file_on_non_chinese_locale`、`test_latin1_file_stays_readable` |
 | 分发层 | `test_cli_dispatch_returns_match_code`、`test_cli_unknown_command`、`test_cli_help_lists_commands` |
 
 不负责：被测代码本身（`w2l/`）、CI 配置（`.github/workflows/ci.yml`）。
@@ -95,7 +95,7 @@ python -m pytest
 
 ```
 ...............................                                          [100%]
-31 passed in 0.15s
+35 passed in 0.15s
 ```
 
 ### 第 2 步：跑单个文件 / 单条用例
@@ -105,7 +105,7 @@ cd E:\1\NULL\Windows-to-Linux
 python -m pytest tests/test_grep.py
 ```
 
-预期：`31 passed`（用例全在这个文件里）。
+预期：`35 passed`（用例全在这个文件里）。
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
@@ -220,7 +220,7 @@ python -m pytest -q
 git status
 ```
 
-预期：`31 passed`（或加了新用例后的新数字），且 `git status` 里只有本次改动。`AGENTS.md` 第 5 节写明「全绿才允许提交」。
+预期：`35 passed`（或加了新用例后的新数字），且 `git status` 里只有本次改动。`AGENTS.md` 第 5 节写明「全绿才允许提交」。
 
 ### 第 8 步：pytest 本身不是项目依赖
 

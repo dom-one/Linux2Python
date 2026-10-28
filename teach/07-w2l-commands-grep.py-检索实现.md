@@ -437,7 +437,7 @@ printf 'ok\nwarn here\n' | python main.py grep -c warn
 1
 ```
 
-不给文件、且 stdin 是终端（不是管道）时，抛 `UsageError`：
+不给文件、且 stdin 是终端（不是管道）时，行为和 GNU grep 一致：从标准输入读，并先打印两行提示。
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
@@ -447,9 +447,11 @@ python main.py grep warn; echo "退出码=$?"
 预期（stderr）：
 
 ```
-错误: 没有指定文件，且标准输入不是终端，无法确定搜索目标
-退出码=2
+未指定文件，从标准输入读取（Windows 下按 Ctrl+Z 后回车结束）。
+要搜索当前目录：python main.py grep -r "PATTERN" .
 ```
+
+之后命令会等你输入（Windows 终端下按 Ctrl+Z 再回车结束输入），匹配到的行照常输出，退出码 0；没有匹配输出 1。
 
 ### 第 11 步：常见坑清单
 
@@ -471,4 +473,4 @@ cd E:\1\NULL\Windows-to-Linux
 python -m pytest -q
 ```
 
-预期：`31 passed`。其中 `tests/test_grep.py` 覆盖了上面说的每一类行为：BRE/ERE 差异（`test_basic_regexp_treats_pipe_as_literal`、`test_basic_regexp_escaped_alternation`）、`-w`（`test_word_regexp`）、`-c`（`test_count`、`test_count_multiple_files_prefixed`）、`-l`（`test_files_with_matches`）、`-o`（`test_only_matching`、`test_only_matching_with_line_number`）、二进制（`test_binary_file_message`、`test_binary_file_listed_with_l`）、编码（`test_gbk_encoding`、`test_crlf_line_endings`）、退出码（`test_no_match_returns_one`、`test_missing_file_reports_error`）。
+预期：`35 passed`。其中 `tests/test_grep.py` 覆盖了上面说的每一类行为：BRE/ERE 差异（`test_basic_regexp_treats_pipe_as_literal`、`test_basic_regexp_escaped_alternation`）、`-w`（`test_word_regexp`）、`-c`（`test_count`、`test_count_multiple_files_prefixed`）、`-l`（`test_files_with_matches`）、`-o`（`test_only_matching`、`test_only_matching_with_line_number`）、二进制（`test_binary_file_message`、`test_binary_file_listed_with_l`）、编码（`test_gbk_encoding`、`test_crlf_line_endings`）、退出码（`test_no_match_returns_one`、`test_missing_file_reports_error`）。
