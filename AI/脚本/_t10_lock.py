@@ -16,7 +16,9 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCK_DIR = os.path.join(ROOT, "AI", "锁")
 LOCK_PATH = os.path.join(LOCK_DIR, "git.lock")
-STALE_SECONDS = 1800
+# 僵尸阈值必须大于两个任务的间隔（开发 02:00、教程 04:00，相隔 2 小时）。
+# 阈值小于间隔时，上一轮跑得久一点还没释放，活锁会被当成僵尸锁接管，两个任务就并发了。
+STALE_SECONDS = 3 * 3600
 
 
 def read_state():

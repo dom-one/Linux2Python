@@ -178,7 +178,7 @@ cd E:\1\NULL\Windows-to-Linux
 python AI/脚本/_t10_lock.py status
 ```
 
-如果 `owner` 不是「未知」且 `released_ts` 是 `null`，说明锁被占着，等它释放（`AI/AGENTS.md` 第 3 节：超过 30 分钟的僵尸锁会被自动接管）。取锁和释放：
+如果 `owner` 不是「未知」且 `released_ts` 是 `null`，说明锁被占着，等它释放（`AI/AGENTS.md` 第 3 节：超过 3 小时的僵尸锁会被自动接管）。取锁和释放：
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
