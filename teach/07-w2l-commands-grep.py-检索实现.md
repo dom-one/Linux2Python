@@ -349,28 +349,33 @@ python main.py grep -v -o -E "ERROR|warn" w2l/commands/grep.py | head -3
 
 ### 第 8 步：编码自动判定
 
-判定逻辑在 `_detect_encoding()`：取文件前 8192 字节，候选编码依次是
+判定逻辑在 `_detect_encoding()`：取文件前 8192 字节，逐个候选编码严格解码样本，按解码结果的**文本可信度**打分，后选的编码可信度明显更高时才替换当前选择。
+
+候选顺序：
 
 1. `utf-8`
-2. `locale.getpreferredencoding(False)`（中文 Windows 上是 `cp936`）
+2. `locale.getpreferredencoding(False)`（中文 Windows 上是 `cp936`，英文 Windows 上是 `cp1252`）
 3. `gb18030`
 4. `latin-1`
 
-第一个能**严格**解码全部样本字节的编码被选中；都不行就退回 `utf-8`。之后整文件按这个编码解码，解码错误用 `errors="replace"` 兜底。
+打分规则在 `_text_score()`：ASCII 可打印字符记 1 分，CJK 字符记 3 分，中文标点与全角记 1 分，换行等空白记 0.5 分，其它非 ASCII 字符记 0.2 分，最后除以字符总数。后选的编码要高出当前最优 0.3 分以上才会被选中。
+
+不能「按顺序取第一个能解码的」：英文 Windows 的系统编码是 `cp1252`，它几乎不报错，能把 GBK 字节解成 Latin 乱码。按顺序取的结果是 GBK 文件里的中文永远搜不到，退出码 1 且没有任何输出。这个问题在中文 Windows 上看不出来（系统编码 `cp936` 正好能解 GBK），英文 Windows 与 Linux 的 CI runner 上必现。
 
 自己验证 GBK 文件能被搜出中文：
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
 python -m pytest -q tests/test_grep.py::test_gbk_encoding
+python -m pytest -q tests/test_grep.py::test_gbk_encoding_on_non_chinese_locale
 ```
 
-预期：1 passed。这条用例在 `tmp_path` 里写一个 GBK 编码的文件（`"中文内容\n".encode("gbk")`），再搜 `中文`，断言输出 `中文内容\n`。
+预期：两条都 passed。第二条用 `monkeypatch` 把 `locale.getpreferredencoding` 换成 `cp1252`，模拟英文 Windows 环境。
 
 两个已知局限：
 
 - **只看前 8 KB**。前 8 KB 是 ASCII、第 8 KB 之后才是 GBK 的文件，会被判定成 `utf-8`，后半段中文变成乱码（`errors="replace"`）。
-- **`gb18030` 排在 `latin-1` 前面**。Latin-1 能解码任意字节，所以放在最后当兜底；但一个真正的 Latin-1/Western 编码文件，很可能被 `gb18030` 抢先「解码成功」，结果是乱码而不是原文。
+- **打分不是编码检测的银弹**。没有 BOM、没有声明时，编码本身就不可判定。一个真正的 Latin-1/Western 编码文件，如果字节恰好能凑成合法 GB18030 双字节，会被判成 GB18030 并显示成中文。
 
 ### 第 9 步：二进制文件
 

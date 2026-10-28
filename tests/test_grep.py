@@ -1,4 +1,5 @@
 import io
+import locale
 
 import pytest
 
@@ -189,6 +190,33 @@ def test_gbk_encoding(tmp_path):
     code, out, _ = run_grep(["中文", str(target)])
     assert code == 0
     assert out == "中文内容\n"
+
+
+def test_gbk_encoding_on_non_chinese_locale(tmp_path, monkeypatch):
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "cp1252")
+    target = tmp_path / "gbk.txt"
+    target.write_bytes("中文内容\n".encode("gbk"))
+    code, out, _ = run_grep(["中文", str(target)])
+    assert code == 0
+    assert out == "中文内容\n"
+
+
+def test_utf8_file_on_non_chinese_locale(tmp_path, monkeypatch):
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "cp1252")
+    target = tmp_path / "utf8.txt"
+    target.write_text("中文内容\n", encoding="utf-8")
+    code, out, _ = run_grep(["中文", str(target)])
+    assert code == 0
+    assert out == "中文内容\n"
+
+
+def test_latin1_file_stays_readable(tmp_path, monkeypatch):
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "cp1252")
+    target = tmp_path / "latin.txt"
+    target.write_bytes("café\nplain\n".encode("cp1252"))
+    code, out, _ = run_grep(["café", str(target)])
+    assert code == 0
+    assert out == "café\n"
 
 
 def test_invalid_regex_is_usage_error(sample_tree):

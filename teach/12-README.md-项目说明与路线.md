@@ -93,12 +93,12 @@ README 里「行为细节对齐 GNU grep」那 6 条，逐条对应到代码：
 |---|---|
 | 正则默认 BRE，`+ ? \| ( ) { }` 是字面量 | `_translate_bre()` + `_BRE_LITERALS` |
 | 退出码 0/1/2 | `grep()` 末尾 `return 2 / return 0 if matched_any else 1` |
-| 编码自动判定 UTF-8 → 系统编码 → GB18030 → Latin-1 | `_detect_encoding()` 的候选顺序 |
+| 编码自动判定：按文本可信度择优，GBK 文件在英文 Windows 上也能搜到 | `_detect_encoding()` + `_text_score()` |
 | 二进制文件输出 `Binary file xxx matches` | `_search_binary()` |
 | 多文件前缀 `文件:行号:内容` | `_line_prefix()` + `show_prefix` |
 | 标准输入 | `_search_stdin()` |
 
-注意 README 写的顺序是「UTF-8 → 系统编码 → GB18030 → Latin-1」，和 `_detect_encoding()` 里的候选顺序一致（`locale.getpreferredencoding(False)` 在中文 Windows 上是 `cp936`）。
+编码判定不是「按顺序取第一个能解码的」，而是给每个候选解码结果按文本可信度打分（`_text_score()`），明显更优才替换。原因见 `07-w2l-commands-grep.py-检索实现.md` 第 8 步：英文 Windows 的系统编码是 `cp1252`，它能把 GBK 字节无错解成乱码。
 
 ### 第 3 步：改代码前先读「架构设计」
 

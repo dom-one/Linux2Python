@@ -1,7 +1,7 @@
 """grep：在文件或目录中搜索匹配模式的行（GNU grep 风格子集）。
 
 默认使用基本正则（BRE），与 GNU grep 一致；-E 切换为扩展正则（ERE）。
-文件编码按 UTF-8 -> 系统编码 -> GB18030 -> Latin-1 顺序自动判定。
+文件编码按文本可信度择优判定，GBK 文件在英文 Windows 上也能正确检索。
 退出码遵循 GNU 约定：0 有命中、1 无命中、2 出错。
 """
 
@@ -21,6 +21,8 @@ from ..registry import command
 
 _SNIFF_SIZE = 8192
 _FALLBACK_ENCODINGS = ("utf-8", "gb18030", "latin-1")
+_SCORE_MARGIN = 0.3
+_CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF))
 _BRE_ESCAPED = {
     "(": "(?:",
     ")": ")",
@@ -279,21 +281,56 @@ def _decode_lines(handle: IO[bytes], encoding: str) -> Iterator[tuple[int, str]]
 
 
 def _detect_encoding(sample: bytes) -> str:
+    """按文本可信度选编码，而不是取第一个能解的。
+
+    系统首选编码在英文 Windows 上是 cp1252，它几乎不报错，能把 GBK 字节解成乱码，
+    按顺序取第一个可解码的编码会让中文内容彻底搜不到。这里给每个候选解码打分，
+    可信度明显更高时才替换当前选择。
+    """
+    best_encoding = "utf-8"
+    best_score = -1.0
+    for encoding in _candidate_encodings():
+        text = _decode_sample(sample, encoding)
+        if text is None:
+            continue
+        score = _text_score(text)
+        if score > best_score + _SCORE_MARGIN:
+            best_score = score
+            best_encoding = encoding
+    return best_encoding
+
+
+def _candidate_encodings() -> list[str]:
     candidates: list[str] = []
     preferred = locale.getpreferredencoding(False)
     for encoding in ("utf-8", preferred, *_FALLBACK_ENCODINGS):
         if encoding and encoding not in candidates:
             candidates.append(encoding)
-    for encoding in candidates:
-        if _decodes(sample, encoding):
-            return encoding
-    return "utf-8"
+    return candidates
 
 
-def _decodes(sample: bytes, encoding: str) -> bool:
+def _decode_sample(sample: bytes, encoding: str) -> str | None:
     try:
         decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
-        decoder.decode(sample, final=False)
+        return decoder.decode(sample, final=False)
     except (UnicodeDecodeError, LookupError, ValueError):
-        return False
-    return True
+        return None
+
+
+def _text_score(text: str) -> float:
+    if not text:
+        return 0.0
+    score = 0.0
+    for char in text:
+        code = ord(char)
+        if 32 <= code < 127:
+            score += 1.0
+        elif any(low <= code <= high for low, high in _CJK_RANGES):
+            score += 3.0
+        elif 0x3000 <= code <= 0x303F or 0xFF00 <= code <= 0xFFEF:
+            score += 1.0
+        elif code in (9, 10, 13):
+            score += 0.5
+        elif code >= 0x80:
+            score += 0.2
+    return score / len(text)
