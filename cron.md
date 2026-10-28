@@ -67,9 +67,12 @@ python -m pytest -q
 ```bash
 git add w2l tests README.md
 git commit -m "feat(<指令名>): 实现 <指令名> 指令"
+git push origin main
 ```
 
 提交信息 UTF-8，一次提交一件事。提交前确认 `git status` 里没有本次范围之外的文件。
+
+推送失败时（凭据或网络问题）本地提交保留，把「推送未成功」和报错原文写进报告，下个 tick 重推。
 
 ## 6. 追加进度
 

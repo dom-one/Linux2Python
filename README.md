@@ -152,13 +152,18 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 - **CI**（`.github/workflows/ci.yml`）：push 与 PR 触发，Python 3.10–3.14 矩阵跑 `pytest`。
 - **版本与发布**：语义化版本，tag `v0.1.0` 对应一次可用的能力集，GitHub Release 附变更说明。
 
-### 本地首次使用
+### 远程仓库
+
+- 地址：`https://github.com/dom-one/Linux2Python`
+- 本地目录名 `Windows-to-Linux`，仓库名 `Linux2Python`，两者指向同一个项目。
+- 远端默认分支 `main`，本地 `main` 跟踪 `origin/main`。
+- CI 在 push 与 PR 时触发，跑 Python 3.10–3.14 的 `pytest`。
+
+### 常用命令
 
 ```bash
-cd Windows-to-Linux
-git init -b main
-git add .
-git commit -m "feat(grep): 首个可用的 grep 实现，含分发骨架与测试"
-git remote add origin <你的仓库地址>
-git push -u origin main
+git status
+git add -A
+git commit -m "feat(ls): 实现 ls 指令"
+git push origin main
 ```

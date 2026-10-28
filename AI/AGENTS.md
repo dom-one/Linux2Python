@@ -46,6 +46,7 @@ python AI/脚本/_t11_progress.py --进度 AI/阅读进度.md --主题 "实现 l
 - 测试有红就不提交。
 - 一次提交一件事，消息格式 `feat(ls): 实现 ls 指令`。
 - 提交信息 UTF-8。
+- 提交后推 `git push origin main`。推送失败不回滚本地提交，把报错原文写进 tick 日志，下个 tick 重推。
 - 不改 `git` 全局配置。
 
 ## 6. 产出路径
