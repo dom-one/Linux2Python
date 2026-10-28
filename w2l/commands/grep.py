@@ -67,25 +67,31 @@ def build_parser() -> argparse.ArgumentParser:
 def grep(args: argparse.Namespace, ctx: RunContext) -> int:
     regex = _compile_regex(args)
 
-    stdin_mode = not args.paths
-    if stdin_mode and ctx.stdin is None:
-        raise UsageError("没有指定文件，也没有可读取的标准输入")
-    if stdin_mode and ctx.stdin.isatty():
-        ctx.stderr.write("未指定文件，从标准输入读取（Windows 下按 Ctrl+Z 后回车结束）。\n")
-        ctx.stderr.write('要搜索当前目录：python main.py grep -r "PATTERN" .\n')
+    paths = list(args.paths)
+    recursive = args.recursive
+    stdin_mode = not paths
 
-    show_prefix = args.recursive or len(args.paths) > 1
+    if stdin_mode:
+        if ctx.stdin is None:
+            raise UsageError("没有指定文件，也没有可读取的标准输入")
+        if ctx.stdin.isatty():
+            paths = ["."]
+            recursive = True
+            stdin_mode = False
+            ctx.stderr.write("未指定路径：递归搜索当前目录（.）。要读标准输入请用管道。\n")
+
+    show_prefix = recursive or len(paths) > 1
     matched_any = False
     had_error = False
 
     if stdin_mode:
         matched_any = _search_stdin(ctx, regex, args) > 0
     else:
-        for raw in args.paths:
+        for raw in paths:
             path = Path(raw)
-            if path.is_dir() and not args.recursive:
+            if path.is_dir() and not recursive:
                 raise UsageError(f"{path}: 是一个目录，请加 -r 递归搜索")
-        for path in _iter_files(args.paths, args.recursive):
+        for path in _iter_files(paths, recursive):
             try:
                 selected = _search_file(path, regex, args, ctx, show_prefix)
             except OSError as exc:

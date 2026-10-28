@@ -96,7 +96,7 @@ README 里「行为细节对齐 GNU grep」那 6 条，逐条对应到代码：
 | 编码自动判定：按文本可信度择优，GBK 文件在英文 Windows 上也能搜到 | `_detect_encoding()` + `_text_score()` |
 | 二进制文件输出 `Binary file xxx matches` | `_search_binary()` |
 | 多文件前缀 `文件:行号:内容` | `_line_prefix()` + `show_prefix` |
-| 标准输入 | `_search_stdin()` |
+| 不给路径时终端搜当前目录、管道读 stdin | `grep()` 里的 `stdin_mode` 判断 + `_search_stdin()` |
 
 编码判定不是「按顺序取第一个能解码的」，而是给每个候选解码结果按文本可信度打分（`_text_score()`），明显更优才替换。原因见 `07-w2l-commands-grep.py-检索实现.md` 第 8 步：英文 Windows 的系统编码是 `cp1252`，它能把 GBK 字节无错解成乱码。
 

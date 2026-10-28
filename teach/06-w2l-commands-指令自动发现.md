@@ -65,7 +65,7 @@ cd E:\1\NULL\Windows-to-Linux
 python -m pytest -q
 ```
 
-预期：`35 passed`。这一步会导入 `w2l.commands.grep` 并执行注册。
+预期：`36 passed`。这一步会导入 `w2l.commands.grep` 并执行注册。
 
 ### 第 3 步：加一个新文件试试（验证流程，验完可删）
 

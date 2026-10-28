@@ -408,9 +408,14 @@ python main.py grep -l "grep" .git/index
 
 二进制文件**不输出行内容**，也不支持 `-n` / `-o`（代码里 `_search_binary` 只做计数和三种汇总输出）。
 
-### 第 10 步：从标准输入读
+### 第 10 步：不给路径时的两种行为
 
-不给文件路径时，grep 从 stdin 读：
+不给文件路径时，行为取决于标准输入是不是管道：
+
+- **终端里直接敲**（stdin 是 tty）：默认递归搜索当前目录，等价于 `grep -r PATTERN .`，输出带文件名前缀。
+- **管道输入**（stdin 不是 tty）：按 GNU 语义从标准输入读。
+
+管道读法：
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
@@ -437,21 +442,46 @@ printf 'ok\nwarn here\n' | python main.py grep -c warn
 1
 ```
 
-不给文件、且 stdin 是终端（不是管道）时，行为和 GNU grep 一致：从标准输入读，并先打印两行提示。
+终端里的默认行为：
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
-python main.py grep warn; echo "退出码=$?"
+python main.py grep "def grep"; echo "退出码=$?"
 ```
 
-预期（stderr）：
+预期：stderr 一行提示，stdout 是搜索结果。
 
 ```
-未指定文件，从标准输入读取（Windows 下按 Ctrl+Z 后回车结束）。
-要搜索当前目录：python main.py grep -r "PATTERN" .
+未指定路径：递归搜索当前目录（.）。要读标准输入请用管道。
 ```
 
-之后命令会等你输入（Windows 终端下按 Ctrl+Z 再回车结束输入），匹配到的行照常输出，退出码 0；没有匹配输出 1。
+实现是 `grep()` 里的这几行：
+
+```python
+paths = list(args.paths)
+recursive = args.recursive
+stdin_mode = not paths
+
+if stdin_mode:
+    if ctx.stdin is None:
+        raise UsageError("没有指定文件，也没有可读取的标准输入")
+    if ctx.stdin.isatty():
+        paths = ["."]
+        recursive = True
+        stdin_mode = False
+        ctx.stderr.write("未指定路径：递归搜索当前目录（.）。要读标准输入请用管道。\n")
+```
+
+这是本项目有意偏离 GNU 的一处。GNU grep 不给路径时永远读 stdin，在终端里敲 `grep "id"` 会等你输入到 Ctrl+D。本项目在终端下改成直接搜当前目录，少敲一个 `.`；管道场景保持 GNU 行为不变。
+
+验证：
+
+```bash
+cd E:\1\NULL\Windows-to-Linux
+python -m pytest -q tests/test_grep.py::test_no_path_in_terminal_searches_current_directory
+```
+
+预期：通过。用例里用 `monkeypatch.chdir(tmp_path)` 把工作目录换到临时目录，不会扫到真实仓库。
 
 ### 第 11 步：常见坑清单
 
@@ -473,4 +503,4 @@ cd E:\1\NULL\Windows-to-Linux
 python -m pytest -q
 ```
 
-预期：`35 passed`。其中 `tests/test_grep.py` 覆盖了上面说的每一类行为：BRE/ERE 差异（`test_basic_regexp_treats_pipe_as_literal`、`test_basic_regexp_escaped_alternation`）、`-w`（`test_word_regexp`）、`-c`（`test_count`、`test_count_multiple_files_prefixed`）、`-l`（`test_files_with_matches`）、`-o`（`test_only_matching`、`test_only_matching_with_line_number`）、二进制（`test_binary_file_message`、`test_binary_file_listed_with_l`）、编码（`test_gbk_encoding`、`test_crlf_line_endings`）、退出码（`test_no_match_returns_one`、`test_missing_file_reports_error`）。
+预期：`36 passed`。其中 `tests/test_grep.py` 覆盖了上面说的每一类行为：BRE/ERE 差异（`test_basic_regexp_treats_pipe_as_literal`、`test_basic_regexp_escaped_alternation`）、`-w`（`test_word_regexp`）、`-c`（`test_count`、`test_count_multiple_files_prefixed`）、`-l`（`test_files_with_matches`）、`-o`（`test_only_matching`、`test_only_matching_with_line_number`）、二进制（`test_binary_file_message`、`test_binary_file_listed_with_l`）、编码（`test_gbk_encoding`、`test_crlf_line_endings`）、退出码（`test_no_match_returns_one`、`test_missing_file_reports_error`）。
