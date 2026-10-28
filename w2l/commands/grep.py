@@ -76,6 +76,10 @@ def grep(args: argparse.Namespace, ctx: RunContext) -> int:
     if stdin_mode:
         matched_any = _search_stdin(ctx, regex, args) > 0
     else:
+        for raw in args.paths:
+            path = Path(raw)
+            if path.is_dir() and not args.recursive:
+                raise UsageError(f"{path}: 是一个目录，请加 -r 递归搜索")
         for path in _iter_files(args.paths, args.recursive):
             try:
                 selected = _search_file(path, regex, args, ctx, show_prefix)
@@ -91,11 +95,11 @@ def grep(args: argparse.Namespace, ctx: RunContext) -> int:
 
 
 def _compile_regex(args: argparse.Namespace) -> re.Pattern:
-    source = args.pattern if args.extended_regexp else _translate_bre(args.pattern)
-    if args.word_regexp:
-        source = rf"(?<!\w)(?:{source})(?!\w)"
     flags = re.IGNORECASE if args.ignore_case else 0
     try:
+        source = args.pattern if args.extended_regexp else _translate_bre(args.pattern)
+        if args.word_regexp:
+            source = rf"(?<!\w)(?:{source})(?!\w)"
         return re.compile(source, flags)
     except re.error as exc:
         raise UsageError(f"无效的正则表达式 '{args.pattern}': {exc}") from exc
@@ -137,8 +141,6 @@ def _iter_files(paths: list[str], recursive: bool) -> Iterator[Path]:
     for raw in paths:
         path = Path(raw)
         if path.is_dir():
-            if not recursive:
-                raise UsageError(f"{path}: 是一个目录，请加 -r 递归搜索")
             yield from _walk(path)
         else:
             yield path

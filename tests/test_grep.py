@@ -49,7 +49,16 @@ def test_recursive_with_prefix(sample_tree):
 
 
 def test_directory_without_recursive_is_usage_error(sample_tree):
-    namespace = build_parser().parse_args(["error", str(sample_tree)])
+    namespace = build_parser().parse_args(["error", str(sample_tree), str(sample_tree / "app.log")])
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(cwd=sample_tree, stdout=out, stderr=err, stdin=_Tty())
+    with pytest.raises(UsageError):
+        grep(namespace, ctx)
+    assert out.getvalue() == ""
+
+
+def test_trailing_backslash_is_usage_error(sample_tree):
+    namespace = build_parser().parse_args(["foo\\", str(sample_tree / "app.log")])
     ctx = RunContext(cwd=sample_tree, stdout=io.StringIO(), stderr=io.StringIO(), stdin=_Tty())
     with pytest.raises(UsageError):
         grep(namespace, ctx)
