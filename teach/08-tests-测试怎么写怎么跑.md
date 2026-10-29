@@ -94,7 +94,7 @@ python -m pytest
 预期输出（`pyproject.toml` 里已配 `addopts = "-q"`，所以裸跑也是安静模式）：
 
 ```
-...............................                                          [100%]
+....................................                                     [100%]
 36 passed in 0.15s
 ```
 
@@ -123,7 +123,7 @@ python -m pytest -k "word or count"
 
 ```
 ....                                                                     [100%]
-4 passed, 27 deselected in 0.03s
+4 passed, 32 deselected in 0.03s
 ```
 
 `-k` 是按用例名做子串匹配，`or` / `and` / `not` 都能用。
@@ -138,7 +138,7 @@ python -m pytest --collect-only -q
 预期最后一行：
 
 ```
-tests/test_grep.py: 31
+tests/test_grep.py: 36
 ```
 
 ### 第 4 步：写一条新用例
@@ -163,7 +163,7 @@ python -m pytest -k ignore_case_with_line_number
 
 ```
 .                                                                        [100%]
-1 passed, 30 deselected in 0.01s
+1 passed, 36 deselected in 0.01s
 ```
 
 `-k` 的匹配规则是「表达式里的标识符是否出现在用例名中」，不是「用例名是否出现在表达式里」。`test_ignore_case` 里没有 `ignore_case_with_line_number` 这个整串，所以不会被选中。

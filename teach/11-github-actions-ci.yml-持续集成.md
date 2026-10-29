@@ -1,6 +1,6 @@
 # .github/workflows/ci.yml — 持续集成
 
-`.github/workflows/ci.yml` 是 GitHub Actions 的工作流定义：在 Windows 上跑 5 个 Python 版本的测试。28 行，一个 job。
+`.github/workflows/ci.yml` 是 GitHub Actions 的工作流定义：在 Windows 上跑 5 个 Python 版本的测试。30 行，一个 job。
 
 ## 为什么这么创建
 
@@ -69,7 +69,7 @@ jobs:
 
 ## 有什么用
 
-- push 到 main 或开 PR 时自动验证：31 个测试 × 5 个 Python 版本。
+- push 到 main 或开 PR 时自动验证：36 个测试 × 5 个 Python 版本。
 - 挡住「本机环境能跑、别人环境跑不了」这类问题。
 - 给 PR 一个客观的通过/不通过信号，不用靠人肉点按钮。
 - 版本支持范围写在配置里，和 `pyproject.toml` 的 `requires-python` 对照着看就知道覆盖全没。
@@ -88,7 +88,7 @@ python -m pytest -q
 预期：
 
 ```
-...............................                                          [100%]
+....................................                                     [100%]
 36 passed in 0.15s
 ```
 

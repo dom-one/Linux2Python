@@ -1,6 +1,6 @@
 # w2l/commands/grep.py — 检索实现
 
-`w2l/commands/grep.py` 是目前唯一一个指令实现，299 行，实现了 GNU grep 的一个子集：`-i -v -n -r -E -w -c -l -o` 九个选项，退出码 0 命中 / 1 未命中 / 2 出错。
+`w2l/commands/grep.py` 是目前唯一一个指令实现，345 行，实现了 GNU grep 的一个子集：`-i -v -n -r -E -w -c -l -o` 九个选项，退出码 0 命中 / 1 未命中 / 2 出错。
 
 ## 为什么这么创建
 
