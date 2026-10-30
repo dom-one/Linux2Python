@@ -92,6 +92,15 @@ def decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+# pytest 的耗时每次跑都不一样，比对前先抹平
+TIMING_RE = re.compile(r"\bin \d+\.\d+s\b")
+
+
+def normalize(text: str) -> str:
+    """把不稳定的部分归一化：pytest 耗时。"""
+    return TIMING_RE.sub("in <T>s", text)
+
+
 def _run_outer(command: str, outpath: str, shell_cmd: str, timeout: int):
     """按给定命令模板执行一次。"""
     with open(os.devnull, "rb") as devnull:
@@ -190,13 +199,14 @@ def check_doc(path: str, allow_risky: bool = False):
         checked += 1
         exp_groups = []
         if len(expected_blocks) == len(payloads):
-            exp_groups = [[ln.strip() for ln in e.splitlines() if ln.strip()]
+            exp_groups = [[normalize(ln.strip()) for ln in e.splitlines() if ln.strip()]
                           for e in expected_blocks]
         else:
             merged = "\n".join(expected_blocks)
-            exp_groups = [[ln.strip() for ln in merged.splitlines() if ln.strip()]]
+            exp_groups = [[normalize(ln.strip()) for ln in merged.splitlines() if ln.strip()]]
 
-        act_groups = [[ln.strip() for ln in a.splitlines() if ln.strip()] for a in actual_list]
+        act_groups = [[normalize(ln.strip()) for ln in a.splitlines() if ln.strip()]
+                      for a in actual_list]
 
         ok = len(exp_groups) == len(act_groups)
         if ok:
