@@ -48,7 +48,11 @@ BASH_CANDIDATES = [
 ]
 BASH_BIN = next((p for p in BASH_CANDIDATES if os.path.isfile(p)), None)
 
-# 会改工作区的命令模式。只做只读核对时一律跳过，不执行。
+# 会改工作区或改仓库状态的命令模式。只做只读核对时一律跳过，不执行。
+#
+# git 一律按危险处理。教程里的 git 示例覆盖了 add/commit/push/checkout/
+# switch/branch/tag/remote 等多种写法，逐个枚举容易漏（漏了 git switch 就
+# 会真的把工作区切到别的分支）。宁可多跳过，不要误改仓库。
 RISKY_PATTERNS = [
     re.compile(p) for p in (
         r"_t10_lock\.py\s+acquire",
@@ -56,7 +60,7 @@ RISKY_PATTERNS = [
         r"_t11_progress\.py",
         # 核对器自己：teach/15 里有它的用法示例，跑起来会递归调用自己
         r"_t12_verify_teach\.py",
-        r"\bgit\s+(add|commit|push|checkout|reset|rm|revert|merge|pull)\b",
+        r"\bgit\b",
         r"\brm\s+--",
         r"\brmdir\b",
         r"\bdel\s+",
