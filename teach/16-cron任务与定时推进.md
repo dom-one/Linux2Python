@@ -277,6 +277,6 @@ python AI/脚本/_t10_lock.py status
 
 ### 第 15 步：脚本名以磁盘为准
 
-脚本的实际文件名是 `AI/脚本/_t10_lock.py` 与 `AI/脚本/_t11_progress.py`（ASCII 名）。`AI/AGENTS.md`、`cron.md`、`AI/cron-教程任务.md` 三处用的都是这两个名字。
+脚本的实际文件名是 `AI/脚本/_t10_lock.py`、`AI/脚本/_t11_progress.py` 与 `AI/脚本/_t12_verify_teach.py`（ASCII 名）。`AI/AGENTS.md`、`cron.md`、`AI/cron-教程任务.md` 三处用的都是前两个名字。
 
 **以磁盘上的实际文件名为准。**
