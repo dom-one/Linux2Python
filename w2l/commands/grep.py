@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO, Iterable, Iterator
 
 from ..context import RunContext
+from ..entry import command_prog
 from ..errors import UsageError
 from ..registry import command
 
@@ -37,16 +38,17 @@ _BRE_LITERALS = "+?|(){}"
 
 
 def build_parser() -> argparse.ArgumentParser:
+    prog = command_prog("grep")
     parser = argparse.ArgumentParser(
-        prog="python main.py grep",
+        prog=prog,
         description="搜索包含 PATTERN 的行",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
-            "  python main.py grep -n TODO src\n"
-            "  python main.py grep -ril error .\n"
-            "  python main.py grep -E 'ERROR|FATAL' app.log\n"
-            "  python main.py grep -c 'import' setup.py\n"
+            f"  {prog} -n TODO src\n"
+            f"  {prog} -ril error .\n"
+            f"  {prog} -E 'ERROR|FATAL' app.log\n"
+            f"  {prog} -c 'import' setup.py\n"
         ),
     )
     parser.add_argument("pattern", help="要搜索的正则表达式")

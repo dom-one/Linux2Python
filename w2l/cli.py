@@ -7,19 +7,21 @@ import sys
 from pathlib import Path
 
 from .context import RunContext
+from .entry import entry_name
 from .errors import CommandError, UsageError
 from .registry import REGISTRY, load_commands
 
 
 def _print_help() -> None:
-    print("用法: python main.py <指令> [参数]")
+    prog = entry_name()
+    print(f"用法: {prog} <指令> [参数]")
     print()
     print("可用指令:")
     width = max((len(name) for name in REGISTRY), default=4)
     for name in sorted(REGISTRY):
         print(f"  {name.ljust(width)}  {REGISTRY[name].summary}")
     print()
-    print("查看具体用法: python main.py <指令> --help")
+    print(f"查看具体用法: {prog} <指令> --help")
 
 
 def _configure_streams() -> None:

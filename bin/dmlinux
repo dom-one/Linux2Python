@@ -1,0 +1,46 @@
+#!/bin/sh
+# ------------------------------------------------------------------
+#  dmlinux - Unix shell launcher for the Windows-to-Linux project
+#  Usage: dmlinux <command> [args...]
+#
+#  The project root is derived from this script's own location, so the
+#  whole bin folder can be moved or re-cloned anywhere.
+# ------------------------------------------------------------------
+
+# Resolve this script through symlinks so $0 always points at a real file.
+script="$0"
+while [ -L "$script" ]; do
+    link_dir=$(cd -P "$(dirname "$script")" >/dev/null 2>&1 && pwd)
+    script=$(readlink "$script")
+    case "$script" in
+        /*) ;;
+        *) script="$link_dir/$script" ;;
+    esac
+done
+
+bin_dir=$(cd -P "$(dirname "$script")" >/dev/null 2>&1 && pwd)
+project_dir=$(cd -P "$bin_dir/.." >/dev/null 2>&1 && pwd)
+main_py="$project_dir/main.py"
+
+# 告诉程序「当前是 dmlinux 调用」，帮助文案据此显示 dmlinux 而不是 python main.py
+export DMLINUX=1
+
+if [ ! -f "$main_py" ]; then
+    echo "dmlinux: 找不到 $main_py，项目目录可能不完整" >&2
+    exit 2
+fi
+
+# Prefer the interpreter that is already on PATH (honours venv/conda),
+# then fall back to the Windows launcher and finally to python3.
+if command -v python >/dev/null 2>&1 && python -c "import sys" >/dev/null 2>&1; then
+    exec python "$main_py" "$@"
+fi
+if command -v python3 >/dev/null 2>&1 && python3 -c "import sys" >/dev/null 2>&1; then
+    exec python3 "$main_py" "$@"
+fi
+if command -v py >/dev/null 2>&1; then
+    exec py -3 "$main_py" "$@"
+fi
+
+echo "dmlinux: 找不到可用的 Python 解释器（需要 python / python3 / py 在 PATH 中）" >&2
+exit 2

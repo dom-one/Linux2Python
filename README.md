@@ -21,6 +21,57 @@ python main.py grep -cE "ERROR|FATAL" app.log
 python main.py grep -oE "https?://\S+" notes.txt
 ```
 
+## 全局命令 `dmlinux`
+
+不想每次都 `cd` 回项目目录再敲 `python main.py`？把 `bin/` 目录加进 PATH 之后，任意目录下直接敲 `dmlinux`：
+
+```bash
+dmlinux grep -rn "TODO" src
+dmlinux grep --help
+```
+
+`bin/` 里放了两份启动器，覆盖三类终端：
+
+| 文件 | 适用终端 | 命中方式 |
+| --- | --- | --- |
+| `bin/dmlinux.cmd` | cmd.exe、PowerShell | `PATHEXT` 自动补 `.CMD` |
+| `bin/dmlinux` | git-bash、WSL、任意 POSIX shell | PATH 精确同名命中（无扩展名） |
+
+两份启动器都从**脚本自身所在目录**反推项目根目录（`bin/` 的上一级），不写死绝对路径，因此整个 `bin/` 目录可以随便挪位置、换机器、重新 clone，行为不变。启动器只做三件事：定位项目根 → 找可用的 Python 解释器（`python` → `python3` → `py -3`）→ 原样透传参数与退出码。编码统一仍由 `w2l/cli.py` 负责，启动器不插手，所以中文输出和管道行为跟 `python main.py` 完全一致。
+
+启动器还会设置 `DMLINUX=1` 环境变量，帮助文案据此跟着入口名走：`dmlinux --help` 显示 `用法: dmlinux <指令> [参数]`，而直接跑 `python main.py --help` 仍显示 `python main.py`。
+
+### 把 `bin` 加进 PATH（一次性）
+
+推荐用图形界面，避开 `setx` 的坑：
+
+1. `Win` 键搜索「环境变量」→ 打开「编辑系统环境变量」
+2. 点「环境变量」按钮
+3. 在上半部分「用户变量」里找到 `Path` → 双击编辑
+4. 点「新建」，填 `bin` 的**绝对路径**，例如 `E:\1\NULL\Windows-to-Linux\bin`
+5. 一路确定，然后**重开一个终端**（已开的终端不会刷新 PATH）
+
+用 `setx` 也行，但有三个坑：
+
+- `setx` 会把 `PATH` 截断到 1024 字符，老机器上可能把后面的路径截掉
+- `setx` 不展开 `%USERPROFILE%` 之类的变量，必须写绝对路径
+- 不加 `/M` 只写用户变量；`/M` 改系统变量需要管理员权限
+
+### 验证
+
+```bash
+where dmlinux                                  # cmd / PowerShell：应指向 bin\dmlinux.cmd
+dmlinux --help                                 # 列出可用指令
+dmlinux grep -rn "TODO" E:\1\NULL\Windows-to-Linux
+```
+
+### 注意事项
+
+- **两份文件都别删**：cmd/PowerShell 靠 `dmlinux.cmd`，git-bash 靠无扩展名的 `dmlinux`，两边各用各的（同名共存时 cmd 会优先选 `.cmd`，已实测）。
+- **`dmlinux.cmd` 保持纯 ASCII**：cmd.exe 按控制台 OEM 代码页读批处理文件，文件里写中文会乱码，所以它的报错信息是英文的；无扩展名那份是 UTF-8，报错信息是中文。
+- **Python 必须在 PATH 里**：找不到 `python`、`python3`、`py` 时启动器返回退出码 `2` 并提示。
+- **`dmlinux` 不切换当前目录**：相对路径按你所在目录解析，与 GNU grep 一致。
+
 ## grep 能力清单
 
 | 选项 | 含义 |
@@ -49,17 +100,22 @@ python main.py grep -oE "https?://\S+" notes.txt
 ```
 Windows-to-Linux/
 ├── main.py                  # 薄入口，转调 w2l.cli:main
+├── bin/                     # 全局启动器，把本目录加进 PATH 即可用 dmlinux
+│   ├── dmlinux.cmd          # Windows（cmd/PowerShell）用
+│   └── dmlinux              # git-bash / POSIX shell 用
 ├── w2l/
 │   ├── cli.py               # 指令分发、帮助输出、异常与退出码处理
 │   ├── registry.py          # 指令注册表 + @command 装饰器
 │   ├── context.py           # 运行上下文（cwd / stdout / stderr / stdin）
 │   ├── errors.py            # UsageError / CommandError
+│   ├── entry.py             # 入口名（python main.py / dmlinux）跟随调用方式
 │   └── commands/
 │       ├── __init__.py      # 自动导入子模块完成注册
 │       └── grep.py          # grep 实现
 ├── tests/
 │   ├── conftest.py
-│   └── test_grep.py
+│   ├── test_grep.py
+│   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
 ```
@@ -132,6 +188,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段四：分发**
 
+- 已有零安装方案：`bin/dmlinux` 启动器，把 `bin/` 加进 PATH 就能全局用（见上文「全局命令 `dmlinux`」）
 - `pipx install` / `pip install -e .` 安装为 `w2l` 命令
 - PyInstaller 打包成单文件 exe，免 Python 环境
 - GitHub Releases 自动附带各平台构建产物
