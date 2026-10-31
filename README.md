@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -19,6 +19,9 @@ python main.py grep -rn "TODO" src      # 递归搜索并显示行号
 python main.py grep -ril "error" .      # 递归列出含匹配的文件名
 python main.py grep -cE "ERROR|FATAL" app.log
 python main.py grep -oE "https?://\S+" notes.txt
+python main.py ls                       # 列出当前目录
+python main.py ls -l w2l                # 长格式：权限、大小、时间、名称
+python main.py ls -R w2l/commands       # 递归列出目录树
 ```
 
 ## 全局命令 `dmlinux`
@@ -95,6 +98,38 @@ dmlinux grep -rn "TODO" E:\1\NULL\Windows-to-Linux
 - **多文件前缀**：搜索多个文件或递归搜索时输出 `文件:行号:内容`。
 - **不给路径时的行为**：在终端里直接敲 `python main.py grep "id"`，默认递归搜索当前目录（等价于 `grep -r "id" .`），输出带文件名前缀。标准输入是管道时按 GNU 语义读 stdin（`echo x | python main.py grep "id"`）。
 
+## ls 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 列出当前目录内容，按名字排序，每行一个条目 | `python main.py ls` |
+| `-l` | 长格式：权限、大小、修改时间、名称 | `python main.py ls -l w2l` |
+| `-a` | 显示全部条目，含 `.` 与 `..` | `python main.py ls -a w2l` |
+| `-A` | 显示隐藏条目，但不含 `.` 与 `..` | `python main.py ls -A w2l` |
+| `-h` | 大小按 1024 进制缩写（K/M/G），配合 `-l` 使用 | `python main.py ls -lh w2l/commands` |
+| `-d` | 列出目录本身而不是它的内容 | `python main.py ls -d w2l/commands` |
+| `-t` | 按修改时间排序，最新的在前 | `python main.py ls -t w2l` |
+| `-S` | 按大小排序，最大的在前 | `python main.py ls -S w2l/commands` |
+| `-r` | 反向输出排序结果 | `python main.py ls -r w2l` |
+| `-F` | 名称后追加类型标记（目录 `/`、可执行 `*`、链接 `@`） | `python main.py ls -F w2l/commands` |
+| `-R` | 递归列出子目录，每级目录带 `目录:` 标题 | `python main.py ls -R w2l/commands` |
+| `-1` | 每行一个条目（默认行为，保留该选项只为兼容习惯用法） | `python main.py ls -1 w2l` |
+
+行为细节对齐 GNU ls：
+
+- **默认按名字排序**：字节序，大写字母在前（`Beta.txt` 排在 `alpha.txt` 前面），与 GNU 的 C 区域一致。
+- **`-h` 不是 `--help`**：GNU 的 `-h` 是 `--human-readable`，所以本指令的用法说明只能用 `--help`。
+- **每行一个条目**：输出不排成多列。GNU 在输出不是终端时也是这么做的，管道和脚本里行为一致。
+- **多个操作数**：普通文件先统一排序输出，目录随后各自成块并带 `目录:` 标题，块之间空一行。
+- **文件操作数按原样打印**：`python main.py ls w2l/cli.py` 输出完整路径，跟 GNU 一样不回退成文件名。
+
+Windows 环境下的差异（都是平台本身没有对应概念，不是实现取巧）：
+
+- **长格式只有四列**：没有链接数、属主、属组。Windows 没有 POSIX 的属主/属组语义，硬凑只会填一列假数字。
+- **权限位来自 Windows 合成值**：普通文件显示 `-rw-rw-rw-`、只读文件 `-r--r--r--`、目录 `drwxrwxrwx`，是 Python `os.stat` 在 Windows 上合出来的，不等价于 POSIX 权限。
+- **没有 `total N` 汇总行**：Windows 的 `stat` 没有 `st_blocks`，拿不到 GNU 的块数口径。
+- **空目录返回退出码 1**（GNU 返回 0），遵循本项目统一的「无结果返回 1」约定，脚本里可直接用它判断目录是否为空。
+
 ## 目录结构
 
 ```
@@ -111,10 +146,12 @@ Windows-to-Linux/
 │   ├── entry.py             # 入口名（python main.py / dmlinux）跟随调用方式
 │   └── commands/
 │       ├── __init__.py      # 自动导入子模块完成注册
-│       └── grep.py          # grep 实现
+│       ├── grep.py          # grep 实现
+│       └── ls.py            # ls 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
+│   ├── test_ls.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -177,7 +214,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`、`cat`、`head`、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`、`head`、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 

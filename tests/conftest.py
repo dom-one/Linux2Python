@@ -9,6 +9,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from w2l.commands.grep import build_parser, grep  # noqa: E402
+from w2l.commands.ls import build_parser as build_ls_parser  # noqa: E402
+from w2l.commands.ls import ls  # noqa: E402
 from w2l.context import RunContext  # noqa: E402
 
 
@@ -27,6 +29,20 @@ def run_grep(argv, cwd=None, stdin_text=""):
         stdin=io.StringIO(stdin_text),
     )
     code = grep(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_ls(argv, cwd=None):
+    """跑一次 ls 指令，返回 (退出码, 标准输出, 标准输出)。"""
+    namespace = build_ls_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(""),
+    )
+    code = ls(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
 
 
