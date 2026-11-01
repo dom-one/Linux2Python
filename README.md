@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -22,6 +22,9 @@ python main.py grep -oE "https?://\S+" notes.txt
 python main.py ls                       # 列出当前目录
 python main.py ls -l w2l                # 长格式：权限、大小、时间、名称
 python main.py ls -R w2l/commands       # 递归列出目录树
+python main.py cat w2l/cli.py           # 打印文件内容
+python main.py cat -n w2l/registry.py   # 带行号打印
+python main.py cat README.md AGENTS.md  # 连接多个文件
 ```
 
 ## 全局命令 `dmlinux`
@@ -130,6 +133,40 @@ Windows 环境下的差异（都是平台本身没有对应概念，不是实现
 - **没有 `total N` 汇总行**：Windows 的 `stat` 没有 `st_blocks`，拿不到 GNU 的块数口径。
 - **空目录返回退出码 1**（GNU 返回 0），遵循本项目统一的「无结果返回 1」约定，脚本里可直接用它判断目录是否为空。
 
+## cat 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 按顺序连接多个文件并输出，不给文件时读标准输入 | `python main.py cat w2l/cli.py` |
+| `-n` | 给所有输出行编号，编号右对齐占 6 位后跟制表符 | `python main.py cat -n w2l/registry.py` |
+| `-b` | 只给非空行编号（与 `-n` 同开时以 `-b` 为准） | `python main.py cat -b w2l/registry.py` |
+| `-E` | 在每行末尾显示 `$` | `python main.py cat -E w2l/registry.py` |
+| `-e` | 等价于 `-vE`：既显示 `$` 又显示非打印字符 | `python main.py cat -e w2l/registry.py` |
+| `-T` | 把制表符显示成 `^I` | `python main.py cat -T w2l/registry.py` |
+| `-t` | 等价于 `-vT`：既显示 `^I` 又显示非打印字符 | `python main.py cat -t w2l/registry.py` |
+| `-s` | 把连续空行压成一行 | `python main.py cat -s w2l/registry.py` |
+| `-v` | 用 `^` 与 `M-` 记号显示非打印字符 | `python main.py cat -v w2l/registry.py` |
+| `-A` | 等价于 `-vET` | `python main.py cat -A w2l/registry.py` |
+| `-u` | 立即输出不缓冲（本实现无实际影响，保留只为兼容习惯用法） | `python main.py cat -u w2l/registry.py` |
+
+行为细节对齐 GNU cat：
+
+- **编号格式**：右对齐占 6 位再跟一个制表符，第 10 行是 `    10\t`，与 GNU 完全一致。
+- **`-b` 覆盖 `-n`**：两个选项同开时以 `-b` 为准，与给出的先后顺序无关。
+- **跨文件延续**：行号在多个文件之间连续累计，不在文件边界重置；`-s` 的空行压紧状态也跨文件延续。
+- **`-` 表示标准输入**：不给任何操作数时也读标准输入；操作数 `-` 可以出现在中间，位置即读取顺序。
+- **空行的判定**：只有内容完全为空的行才算空行。含空格的行不算，所以 `-s` 不压它、`-b` 照样给它编号。
+- **换行只认 `\n`**：`\r` 留在行内容里，所以 CRLF 文件的空行内容是 `\r`，不算空行。
+- **末行不补换行**：文件末尾没有换行符时，输出也不加，GNU 行为一致。
+- **`-v` 按字节算**：控制字符显示成 `^X`（`^@`、`^G`、`^?`），高位字节显示成 `M-` 加低七位（`M-^@`、`M- `）。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **文本按判定出的编码解码，输出统一 UTF-8**：GBK 文件在英文 Windows 上也能正确显示中文。GNU cat 是字节透传，会把 GBK 字节原样写出去。
+- **二进制文件逐字节原样转交**：含 NUL 字节、或任何文本编码都解不出来的文件，按原字节输出，不做编码转换，`cat` 后接校验和工具结果与源文件一致。
+- **文件打不开返回退出码 2**（GNU cat 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常输出，不中断。
+- **控制台里换行仍是 CRLF**：管道与重定向时按原样转交文件里的 LF/CRLF，输出与源文件逐字节一致。
+
 ## 目录结构
 
 ```
@@ -147,11 +184,13 @@ Windows-to-Linux/
 │   └── commands/
 │       ├── __init__.py      # 自动导入子模块完成注册
 │       ├── grep.py          # grep 实现
-│       └── ls.py            # ls 实现
+│       ├── ls.py            # ls 实现
+│       └── cat.py           # cat 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
 │   ├── test_ls.py
+│   ├── test_cat.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -214,7 +253,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`、`head`、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
