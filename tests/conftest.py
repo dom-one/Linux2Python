@@ -11,6 +11,8 @@ if str(ROOT) not in sys.path:
 from w2l.commands.cat import build_parser as build_cat_parser  # noqa: E402
 from w2l.commands.cat import cat  # noqa: E402
 from w2l.commands.grep import build_parser, grep  # noqa: E402
+from w2l.commands.head import build_parser as build_head_parser  # noqa: E402
+from w2l.commands.head import head  # noqa: E402
 from w2l.commands.ls import build_parser as build_ls_parser  # noqa: E402
 from w2l.commands.ls import ls  # noqa: E402
 from w2l.context import RunContext  # noqa: E402
@@ -60,6 +62,25 @@ def run_cat(argv, cwd=None, stdin_text=""):
     )
     code = cat(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
+
+
+def run_head(argv, cwd=None, stdin_text=""):
+    """跑一次 head 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_head_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(stdin_text),
+    )
+    code = head(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def build_head_namespace(argv):
+    """只解析 head 的参数，不执行指令，用于检查用法错误。"""
+    return build_head_parser().parse_args(list(argv))
 
 
 @pytest.fixture

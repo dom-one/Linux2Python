@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -25,6 +25,9 @@ python main.py ls -R w2l/commands       # 递归列出目录树
 python main.py cat w2l/cli.py           # 打印文件内容
 python main.py cat -n w2l/registry.py   # 带行号打印
 python main.py cat README.md AGENTS.md  # 连接多个文件
+python main.py head w2l/cli.py          # 打印文件开头 10 行
+python main.py head -n 20 w2l/registry.py  # 打印开头 20 行
+python main.py head -c 512 w2l/context.py   # 打印开头 512 字节
 ```
 
 ## 全局命令 `dmlinux`
@@ -167,6 +170,38 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **文件打不开返回退出码 2**（GNU cat 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常输出，不中断。
 - **控制台里换行仍是 CRLF**：管道与重定向时按原样转交文件里的 LF/CRLF，输出与源文件逐字节一致。
 
+## head 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 打印每个文件的开头 10 行，不给文件时读标准输入 | `python main.py head w2l/cli.py` |
+| `-n` | 打印前 NUM 行，默认 10；NUM 带负号表示除末 NUM 行之外全要 | `python main.py head -n 20 w2l/registry.py` |
+| `-c` | 打印前 NUM 字节；与 `-n` 同时给时后写的生效 | `python main.py head -c 512 w2l/context.py` |
+| `-q` | 不打印文件名标题（别名 `--quiet`、`--silent`） | `python main.py head -q w2l/cli.py w2l/context.py` |
+| `-v` | 总是打印文件名标题（别名 `--verbose`） | `python main.py head -v w2l/cli.py` |
+| `-z` | 行分隔符换成 NUL 而不是换行（用于 NUL 分隔的数据） | `python main.py head -z w2l/registry.py` |
+
+行为细节对齐 GNU head：
+
+- **计数带正负号**：`+NUM` 与 `NUM` 等价，`-NUM` 表示「除末 NUM 行/字节之外全要」。head 没有 tail 那种「从第 N 行开始」的语义。
+- **`0` 与 `-0` 含义不同**：`-n 0` 一行不要，`-n -0` 全部都要。
+- **`-n` 与 `-c` 后写的生效**：`-c 7 -n 2` 取 2 行，`-n 2 -c 7` 取 7 字节。
+- **`-q` 与 `-v` 后写的生效**：`-q -v` 打标题，`-v -q` 不打。
+- **乘数后缀**：`b`=512，`k`/`K`=1024，`m`/`M`=1024²，`G`=1024³，`T`=1024⁴，`P`=1024⁵，`E`=1024⁶；字母加 `B` 是 1000 进制（`kB`=1000、`MB`=1000²），字母加 `iB` 是二进制前缀（`KiB`=`K`、`MiB`=`M`）。
+- **紧凑写法 `-NUM`**：等价于 `-n NUM`，`python main.py head -20 w2l/cli.py` 就是前 20 行。
+- **多文件标题**：格式是 `==> 文件名 <==`，第二个及以后的标题前先空一行。
+- **打不开的文件不打标题**：只报错并继续处理后面的文件；目录则先打标题再报「是一个目录」，与 GNU 一致。
+- **`-` 表示标准输入**：不给任何操作数时也读标准输入，标题写作 `==> standard input <==`。
+- **换行只认 `\n`**：`\r` 留在行内容里，所以 CRLF 文件的内容原样转交。
+- **末行不补换行**：文件末尾没有换行符时，输出也不加。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **文本按判定出的编码解码，输出统一 UTF-8**：GBK 文件在英文 Windows 上也能正确显示中文。GNU head 是字节透传，会把 GBK 字节原样写出去。
+- **二进制文件逐字节原样转交**：含 NUL 字节、或任何文本编码都解不出来的文件，按原字节输出，不做编码转换。
+- **`-c` 的字节数按源文件算**：GBK 文本输出成 UTF-8 后字节数会变多，但取的仍是源文件的前 N 个字节。
+- **文件打不开返回退出码 2**（GNU head 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常输出，不中断。
+
 ## 目录结构
 
 ```
@@ -185,12 +220,14 @@ Windows-to-Linux/
 │       ├── __init__.py      # 自动导入子模块完成注册
 │       ├── grep.py          # grep 实现
 │       ├── ls.py            # ls 实现
-│       └── cat.py           # cat 实现
+│       ├── cat.py           # cat 实现
+│       └── head.py          # head 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
 │   ├── test_ls.py
 │   ├── test_cat.py
+│   ├── test_head.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -253,7 +290,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
