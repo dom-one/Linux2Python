@@ -77,23 +77,38 @@ python -m pytest -q tests/test_grep.py::test_cli_help_lists_commands
 
 这条用例断言 `main(["--help"])` 的输出里含 `grep`，等于间接验证了注册表里有 `grep` 这一项。
 
-想直接看字典内容，可以临时开一个 REPL：
+想直接看字典内容，可以临时开一个 REPL 敲 `python` 再逐条输入。
+
+不过写下来更实用的是 `python -c` —— 一行跑完就退出，可以直接粘到
+脚本里、放进 CI、或者被别的程序调用：
 
 ```bash
 cd E:\1\NULL\Windows-to-Linux
-python
+python -c "from w2l.registry import load_commands, REGISTRY;load_commands();print(sorted(REGISTRY))"
 ```
+
+预期输出：
+
+```
+['cat', 'grep', 'head', 'ls', 'tail']
+```
+
+同一批数据在 REPL 里逐条敲是：
 
 ```python
 >>> from w2l.registry import load_commands, REGISTRY
 >>> load_commands()
 >>> sorted(REGISTRY)
-['grep']
+['cat', 'grep', 'head', 'ls', 'tail']
 >>> REGISTRY['grep'].summary
 '搜索包含 PATTERN 的行（GNU grep 风格子集）'
 >>> REGISTRY['grep'].parser_factory
 <function build_parser at 0x...>
 ```
+
+> REPL 只能在真终端里敲。命令被管道接走时 `python` 读不到控制台句柄，
+> Python 3.13+ 的新 REPL 会反复抛 OSError 并无限刷 traceback。
+> 要在脚本里拿数据，用上面的 `python -c` 写法。
 
 ### 第 3 步：用 `@command` 登记一个处理函数
 
@@ -143,9 +158,11 @@ python main.py ls w2l
 
 ```
 __init__.py
+__pycache__
 cli.py
 commands
 context.py
+entry.py
 errors.py
 registry.py
 ```
