@@ -26,6 +26,14 @@ cmd 解析不了，整条命令直接失败。传字符串才是 cmd 认的形�
 往进度文件追加记录。这个脚本只做「只读核对」：
 - 默认跳过命中危险模式的命令块，只报告跳过，不执行
 - 用 --allow-risky 显式放行才会真跑
+
+资源约束（2026-11-05 加）:
+全量核对时差点把磁盘写满——教程里的裸 `python` 命令块在管道里跑，
+会进 Python 3.13+ 的新 REPL，反复抛控制台句柄的 OSError 并无限刷 traceback
+（实测 6 秒 280 MB）。加上：
+- 单条命令输出上限 4 MB，边跑边看文件大小，超了立刻杀进程树
+- 超时用 taskkill /T 杀整棵进程树（只杀 bash 杀不掉 python 孙进程）
+- 进交互 REPL 的命令块（裸 python / python3 / py -3）默认跳过
 """
 
 import argparse
@@ -34,6 +42,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TEACH_DIR = os.path.join(ROOT, "teach")
@@ -73,13 +82,27 @@ RISKY_PATTERNS = [
         r"\bpython\s+-m\s+pip\b",
         r">\s*\S+\.(md|txt|py|toml|cfg|ini)\b",
         r"\btee\b",
+        # 进交互 REPL 的写法：管道里跑不了，还会让 Python 3.13+ 的新 REPL
+        # 反复抛控制台句柄的 OSError 刷爆输出（实测 6 秒 280 MB）
+        r"^(python3?|py( -3)?)$",
     )
 ]
 
+# 命令块里的分段符。核对器把多行命令用 " && " 串起来，
+# 所以要按段切开看有没有哪一段是裸 python。
+SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\|")
+
+# 裸 python / python3 / py -3 —— 这三种写法会进交互 REPL
+REPL_ONLY = re.compile(r"^(python3?|py( -3)?)$")
+
 
 def is_risky(payload: str) -> bool:
-    """命令是否会改工作区。"""
-    return any(pattern.search(payload) for pattern in RISKY_PATTERNS)
+    """命令是否会改工作区，或是否会进交互 REPL。"""
+    if any(pattern.search(payload) for pattern in RISKY_PATTERNS):
+        return True
+    # 裸 python 进 REPL：按分段切开看，"cd X && python" 这种也要挡住
+    return any(REPL_ONLY.match(seg.strip())
+               for seg in SEGMENT_SPLIT.split(payload))
 
 
 def decode(raw: bytes) -> str:
@@ -101,10 +124,67 @@ def normalize(text: str) -> str:
     return TIMING_RE.sub("in <T>s", text)
 
 
-def _run_outer(command: str, outpath: str, shell_cmd: str, timeout: int):
-    """按给定命令模板执行一次。"""
+# 单条命令的输出上限。超过就杀掉进程树并报错，不让磁盘被写满。
+# 实测裸 `python` 在非交互 stdin 下会让 Python 3.13+ 的新 REPL 反复抛
+# _pyrepl/windows_console.py getheightwidth 的 OSError，6 秒能写 280 MB。
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+
+
+def _kill_tree(pid: int) -> None:
+    """杀掉进程树。
+
+    只杀父进程不够：bash 拉起的 python.exe 是孙进程，
+    会继续往临时文件里写，磁盘照涨。taskkill /T 杀整棵树。
+    """
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, stdin=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def _run_outer(command: str, outpath: str, shell_cmd, timeout: int):
+    """按给定命令模板执行一次，返回 (退出码, 是否超限)。
+
+    超限时杀进程树并返回 True，让调用方知道输出不可信。
+
+    关键点是**边跑边看文件大小**，不能等命令结束再查：
+    失控命令的写入速度是 ~47 MB/s，等到超时再查已经写了 2.8 GB。
+    """
+    deadline = time.time() + timeout
     with open(os.devnull, "rb") as devnull:
-        return subprocess.run(shell_cmd, capture_output=True, stdin=devnull, timeout=timeout)
+        # 命令自己的 stdout/stderr 已经被重定向进 outpath，
+        # 这里把子进程的管道丢到 DEVNULL，避免在内存里再攒一份
+        proc = subprocess.Popen(shell_cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, stdin=devnull)
+        while True:
+            try:
+                proc.wait(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+
+            try:
+                size = os.path.getsize(outpath)
+            except OSError:
+                size = 0
+            if size > MAX_OUTPUT_BYTES:
+                _kill_tree(proc.pid)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                return -2, True
+
+            if time.time() > deadline:
+                _kill_tree(proc.pid)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                return -1, False
+
+        return proc.returncode, False
 
 
 def run_in_shell(command: str, timeout: int = 60):
@@ -114,6 +194,10 @@ def run_in_shell(command: str, timeout: int = 60):
     cmd.exe 里没有这些命令。用 bash 跑才对得上读者看到的写法。
 
     找不到 Git Bash 时退回 cmd.exe：读者在 cmd 里敲也要能跑通。
+
+    安全约束：
+    - 输出超过 MAX_OUTPUT_BYTES 立刻杀掉进程树并报错（防止刷爆磁盘）
+    - 超时用 taskkill /T 杀整棵进程树（孙进程不杀就会继续写文件）
     """
     handle, outpath = tempfile.mkstemp(suffix=".txt")
     os.close(handle)
@@ -121,23 +205,30 @@ def run_in_shell(command: str, timeout: int = 60):
         if BASH_BIN and os.path.isfile(BASH_BIN):
             # bash 里 stdout 重定向直接写文件，编码由 Python 端按 GBK/UTF-8 兜底
             full = 'cd "%s" && { %s ; } > "%s" 2>&1' % (WORKDIR, command, outpath)
-            try:
-                _run_outer(command, outpath, [BASH_BIN, "-c", full], timeout)
-            except subprocess.TimeoutExpired:
-                return -1, "(超时 %ds，命令没退出)" % timeout
+            code, over = _run_outer(command, outpath, [BASH_BIN, "-c", full], timeout)
         else:
             full = 'cd /d "%s" && %s > "%s" 2>&1' % (WORKDIR, command, outpath)
-            try:
-                _run_outer(command, outpath, "cmd.exe /c " + full, timeout)
-            except subprocess.TimeoutExpired:
-                return -1, "(超时 %ds，命令没退出)" % timeout
+            code, over = _run_outer(command, outpath, "cmd.exe /c " + full, timeout)
+
+        if over:
+            return -2, "(输出超过 %d MB，命令已杀掉，输出不可信)" % (
+                MAX_OUTPUT_BYTES // 1024 // 1024)
+        if code == -1:
+            return -1, "(超时 %ds，命令没退出)" % timeout
+
         with open(outpath, "rb") as fh:
-            return 0, decode(fh.read()).strip()
+            return code, decode(fh.read()).strip()
     finally:
-        try:
-            os.remove(outpath)
-        except OSError:
-            pass
+        # Windows 上文件被进程占着时 os.remove 会失败，重试几次；
+        # 还失败就打印路径，别再静默吞掉（上次就是它把 3.2 GB 文件留在盘上）
+        for _ in range(3):
+            try:
+                os.remove(outpath)
+                break
+            except OSError:
+                time.sleep(0.3)
+        else:
+            print("警告：临时文件删不掉，可能还有进程占着：%s" % outpath)
 
 
 def check_doc(path: str, allow_risky: bool = False):
