@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -28,6 +28,10 @@ python main.py cat README.md AGENTS.md  # 连接多个文件
 python main.py head w2l/cli.py          # 打印文件开头 10 行
 python main.py head -n 20 w2l/registry.py  # 打印开头 20 行
 python main.py head -c 512 w2l/context.py   # 打印开头 512 字节
+python main.py tail w2l/cli.py          # 打印文件末尾 10 行
+python main.py tail -n 20 w2l/registry.py  # 打印末尾 20 行
+python main.py tail -n +20 w2l/cli.py   # 从第 20 行开始到最后
+python main.py tail -f app.log          # 持续跟踪日志新增内容
 ```
 
 ## 全局命令 `dmlinux`
@@ -202,6 +206,49 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **`-c` 的字节数按源文件算**：GBK 文本输出成 UTF-8 后字节数会变多，但取的仍是源文件的前 N 个字节。
 - **文件打不开返回退出码 2**（GNU head 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常输出，不中断。
 
+## tail 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 打印每个文件的末尾 10 行，不给文件时读标准输入 | `python main.py tail w2l/cli.py` |
+| `-n` | 打印末 NUM 行，默认 10；NUM 带 `+` 号表示从第 NUM 行开始 | `python main.py tail -n 20 w2l/registry.py` |
+| `-c` | 打印末 NUM 字节；NUM 带 `+` 号表示从第 NUM 字节开始；与 `-n` 同时给时后写的生效 | `python main.py tail -c 512 w2l/context.py` |
+| `-q` | 不打印文件名标题（别名 `--quiet`、`--silent`） | `python main.py tail -q w2l/cli.py w2l/context.py` |
+| `-v` | 总是打印文件名标题（别名 `--verbose`） | `python main.py tail -v w2l/cli.py` |
+| `-z` | 行分隔符换成 NUL 而不是换行（用于 NUL 分隔的数据） | `python main.py tail -z w2l/registry.py` |
+| `-f` | 跟随文件增长，持续输出新追加的内容（别名 `--follow`） | `python main.py tail -f w2l/cli.py` |
+| `-F` | 按文件名跟随，日志轮转后自动跟到新文件 | `python main.py tail -F w2l/cli.py` |
+| `-s` | 跟随时两次检查之间的间隔秒数，默认 1（别名 `--sleep-interval`） | `python main.py tail -f -s 0.5 w2l/cli.py` |
+| `--pid` | 跟随时，等这个进程退出就结束 | `python main.py tail -f --pid 1234 w2l/cli.py` |
+| `--retry` | 文件暂时打不开时继续重试而不是放弃 | `python main.py tail -F --retry w2l/cli.py` |
+
+行为细节对齐 GNU tail：
+
+- **`+NUM` 是起点，不是等价写法**：这是 tail 与 head 最大的不同。`-n 5` 取末 5 行，`-n +5` 从第 5 行开始一直到最后。`-c` 同理，只是单位是字节。
+- **负号等价于正号**：`-n -5` 与 `-n 5` 同义，都是取末 5 个。`-n 0` 一个不要，`-n +0` 全部都要。
+- **`-n` 与 `-c` 后写的生效**：`-c 7 -n 2` 取 2 行，`-n 2 -c 7` 取 7 字节。
+- **`-q` 与 `-v` 后写的生效**：`-q -v` 打标题，`-v -q` 不打。
+- **乘数后缀**：`b`=512，`k`/`K`=1024，`m`/`M`=1024²，`G`=1024³，`T`=1024⁴，`P`=1024⁵，`E`=1024⁶；字母加 `B` 是 1000 进制（`kB`=1000、`MB`=1000²），字母加 `iB` 是二进制前缀（`KiB`=`K`、`MiB`=`M`）。`-n` 的后缀乘的是**行数**（`-n 1b` 就是 512 行），`-c` 的后缀乘的是**字节数**。
+- **紧凑写法 `-NUM`**：等价于 `-n NUM`，`python main.py tail -20 w2l/cli.py` 就是末 20 行。
+- **多文件标题**：格式是 `==> 文件名 <==`，第二个及以后的标题前先空一行。
+- **打不开的文件不打标题**：只报错并继续处理后面的文件；目录则先打标题再报「是一个目录」，与 GNU 一致。
+- **`-` 表示标准输入**：不给任何操作数时也读标准输入，标题写作 `==> standard input <==`。
+- **换行只认 `\n`**：`\r` 留在行内容里，所以 CRLF 文件的内容原样转交。
+- **末行不补换行**：文件末尾没有换行符时，输出也不加；末行没有换行符时它**也算一行**。
+- **`-z` 只改行分隔符**：`-z` 下 `\n` 不再分行，整个文件算一行。
+- **跟随时半行要等换行符**：写日志的程序正在写一半时，那半行先留在缓冲里，等换行符到了再整体输出，不会出现半截行。
+- **`-f` 与 `-F` 的区别**：`-f` 按文件描述符跟，文件被改名了也照样跟旧内容；`-F` 按文件名跟，文件被轮转掉（改名后新建同名文件）就自动跟到新文件。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **文本按判定出的编码解码，输出统一 UTF-8**：GBK 文件在英文 Windows 上也能正确显示中文。GNU tail 是字节透传，会把 GBK 字节原样写出去。编码判定取的是「将要输出的那一段」而不是文件开头，所以 GBK 日志的末尾照样出中文。
+- **二进制文件逐字节原样转交**：含 NUL 字节、或任何文本编码都解不出来的文件，按原字节输出，不做编码转换。
+- **`-c` 的字节数按源文件算**：GBK 文本输出成 UTF-8 后字节数会变多，但取的仍是源文件的末 N 个字节。
+- **文件打不开返回退出码 2**（GNU tail 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常输出，不中断。
+- **`-F` 跟随时不长期占着文件句柄**：Windows 上打开着的文件不能改名（没开 `FILE_SHARE_DELETE`），日志轮转第一步就是改名，长期占着句柄会直接失败。按文件名跟随时每轮都重新打开再关掉，避开这个限制。
+- **`-f` 按描述符跟随时同样占着句柄**：此时文件被改名会失败，这是 Windows 的限制，不是实现取巧；需要抗轮转就用 `-F`。
+- **`--max-unchanged-stats` 没实现**：GNU 用它定期重开文件来发现轮转，本实现直接比较文件标识，行为等价。
+
 ## 目录结构
 
 ```
@@ -221,13 +268,15 @@ Windows-to-Linux/
 │       ├── grep.py          # grep 实现
 │       ├── ls.py            # ls 实现
 │       ├── cat.py           # cat 实现
-│       └── head.py          # head 实现
+│       ├── head.py          # head 实现
+│       └── tail.py          # tail 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
 │   ├── test_ls.py
 │   ├── test_cat.py
 │   ├── test_head.py
+│   ├── test_tail.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -290,7 +339,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
