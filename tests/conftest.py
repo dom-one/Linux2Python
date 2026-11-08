@@ -17,6 +17,8 @@ from w2l.commands.ls import build_parser as build_ls_parser  # noqa: E402
 from w2l.commands.ls import ls  # noqa: E402
 from w2l.commands.tail import build_parser as build_tail_parser  # noqa: E402
 from w2l.commands.tail import tail  # noqa: E402
+from w2l.commands.wc import build_parser as build_wc_parser  # noqa: E402
+from w2l.commands.wc import wc  # noqa: E402
 from w2l.context import RunContext  # noqa: E402
 
 
@@ -102,6 +104,20 @@ def run_tail(argv, cwd=None, stdin_text=""):
 def build_tail_namespace(argv):
     """只解析 tail 的参数，不执行指令，用于检查用法错误。"""
     return build_tail_parser().parse_args(list(argv))
+
+
+def run_wc(argv, cwd=None, stdin_text=""):
+    """跑一次 wc 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_wc_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(stdin_text),
+    )
+    code = wc(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
 
 
 @pytest.fixture

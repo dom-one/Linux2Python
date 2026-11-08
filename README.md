@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -32,6 +32,9 @@ python main.py tail w2l/cli.py          # 打印文件末尾 10 行
 python main.py tail -n 20 w2l/registry.py  # 打印末尾 20 行
 python main.py tail -n +20 w2l/cli.py   # 从第 20 行开始到最后
 python main.py tail -f app.log          # 持续跟踪日志新增内容
+python main.py wc w2l/cli.py            # 统计行数、词数、字节数
+python main.py wc -l README.md          # 只统计行数
+python main.py wc -L README.md          # 最长行的显示宽度
 ```
 
 ## 全局命令 `dmlinux`
@@ -249,6 +252,37 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **`-f` 按描述符跟随时同样占着句柄**：此时文件被改名会失败，这是 Windows 的限制，不是实现取巧；需要抗轮转就用 `-F`。
 - **`--max-unchanged-stats` 没实现**：GNU 用它定期重开文件来发现轮转，本实现直接比较文件标识，行为等价。
 
+## wc 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 打印「行 词 字节」三列 | `python main.py wc w2l/cli.py` |
+| `-l` | 打印行数 | `python main.py wc -l w2l/registry.py` |
+| `-w` | 打印词数 | `python main.py wc -w README.md` |
+| `-m` | 打印字符数 | `python main.py wc -m README.md` |
+| `-c` | 打印字节数 | `python main.py wc -c README.md` |
+| `-L` | 打印最长行的显示宽度 | `python main.py wc -L README.md` |
+
+行为细节对齐 GNU wc：
+
+- **默认三列**：不给任何选项时打印 行/词/字节；给了选项就只打印打开的那几列。
+- **列的顺序固定**：行 → 词 → 字符 → 字节 → 最长行，与选项书写的顺序无关，`-clw` 和 `-lwc` 的输出一样。
+- **行只按 `\n` 计**：文件末尾没有换行的那一行不算一行，但它的词照样算。
+- **词的判定**：按空白分隔，空白包含空格、制表符、换行、回车、竖制表、换页；片段里夹着控制字符不算断开（`a\x01b` 算一个词），整个片段里一个可打印字符都没有时不算词（纯二进制内容词数是 0）。
+- **`-m` 数字符不是数字节**：一个汉字算一个字符，字节数是 `-c` 的事。
+- **`-L` 给的是显示列宽不是字符数**：全角字符算 2 列，制表符展开到 8 的倍数，`\r` 把列号清零；取这一行出现过的最大列数，`\r` 之后的宽度再大也不算数。
+- **多文件打 total**：行/词/字符/字节求和，最长行取最大值（不是求和）。
+- **`-` 表示标准输入**：不给任何操作数时也读标准输入，但那一行不写文件名；操作数 `-` 写在文件名列里。
+- **重复的 `-` 只读一次标准输入**：第二个 `-` 读到的是空的，total 也只算一次。
+- **列宽逐列算**：每列先按自己出现过的最大计数定下限；只打印一列、且不打 total 行时不做对齐，否则每列再按「普通文件字节数之和」撑开。标准输入与目录的大小事先数不出来，GNU 为它们预留 7 列。计数比预留宽度长时直接写长，不截断，所以 total 行的字节数可以比前面的行更宽。
+- **打不开的文件不输出计数行**：只报错并继续处理后面的文件；目录则打一行全 0 再报错。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **文本按判定出的编码解码后统计**：GBK 里的汉字按 1 个字算（`-m`）、按 2 列算（`-L`），中文也算词字符。GNU 在 C 区域设置下解不出 GBK，会把字符数整个记成 0，中文文件的词数也是 0；换到匹配的区域设置（zh_CN.UTF-8）跑 GNU，数字与本实现一致。
+- **解不出的字节既不算字符也不算词**，显示宽度算 0，与 GNU 一致。
+- **文件打不开返回退出码 2**（GNU wc 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常统计，不中断。
+
 ## 目录结构
 
 ```
@@ -269,7 +303,8 @@ Windows-to-Linux/
 │       ├── ls.py            # ls 实现
 │       ├── cat.py           # cat 实现
 │       ├── head.py          # head 实现
-│       └── tail.py          # tail 实现
+│       ├── tail.py          # tail 实现
+│       └── wc.py            # wc 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -277,6 +312,7 @@ Windows-to-Linux/
 │   ├── test_cat.py
 │   ├── test_head.py
 │   ├── test_tail.py
+│   ├── test_wc.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -339,7 +375,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
