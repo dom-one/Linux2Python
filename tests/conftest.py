@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
 
 from w2l.commands.cat import build_parser as build_cat_parser  # noqa: E402
 from w2l.commands.cat import cat  # noqa: E402
+from w2l.commands.find import build_parser as build_find_parser  # noqa: E402
+from w2l.commands.find import find  # noqa: E402
 from w2l.commands.grep import build_parser, grep  # noqa: E402
 from w2l.commands.head import build_parser as build_head_parser  # noqa: E402
 from w2l.commands.head import head  # noqa: E402
@@ -117,6 +119,20 @@ def run_wc(argv, cwd=None, stdin_text=""):
         stdin=io.StringIO(stdin_text),
     )
     code = wc(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_find(argv, cwd=None):
+    """跑一次 find 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_find_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(""),
+    )
+    code = find(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
 
 

@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -35,6 +35,10 @@ python main.py tail -f app.log          # 持续跟踪日志新增内容
 python main.py wc w2l/cli.py            # 统计行数、词数、字节数
 python main.py wc -l README.md          # 只统计行数
 python main.py wc -L README.md          # 最长行的显示宽度
+python main.py find w2l -name '*.py'    # 按文件名找文件
+python main.py find . -type f -size +1k # 按类型和大小找文件
+python main.py find . -name '*.log' -mtime +7   # 找 7 天前改过的日志
+python main.py find . -type d -name __pycache__ -prune -o -print  # 跳过目录
 ```
 
 ## 全局命令 `dmlinux`
@@ -283,6 +287,64 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **解不出的字节既不算字符也不算词**，显示宽度算 0，与 GNU 一致。
 - **文件打不开返回退出码 2**（GNU wc 返回 1），遵循本项目「用法或运行错误返回 2」的约定；其余文件照常统计，不中断。
 
+## find 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 打印所有找到的路径 | `python main.py find w2l` |
+| `-name PATTERN` | 文件名匹配通配符（区分大小写） | `python main.py find w2l -name '*.py'` |
+| `-iname PATTERN` | 同上，忽略大小写 | `python main.py find w2l -iname '*.PY'` |
+| `-path PATTERN` | 整个路径匹配通配符 | `python main.py find . -path '*commands*'` |
+| `-ipath PATTERN` | 同上，忽略大小写 | `python main.py find . -ipath '*COMMANDS*'` |
+| `-regex PATTERN` | 整个路径匹配正则 | `python main.py find . -regex '.*\.py$'` |
+| `-iregex PATTERN` | 同上，忽略大小写 | `python main.py find . -iregex '.*\.PY$'` |
+| `-type [fd]` | 按类型筛选：`f` 普通文件、`d` 目录 | `python main.py find w2l -type d` |
+| `-size N[cwkMG]` | 按大小筛选，默认 512 字节块，可带 `+`/`-` | `python main.py find . -size +10k` |
+| `-mtime N` | N 天前修改过，可带 `+`/`-` | `python main.py find . -mtime +7` |
+| `-mmin N` | N 分钟前修改过，可带 `+`/`-` | `python main.py find . -mmin -30` |
+| `-newer FILE` | 比 FILE 的修改时间更新的文件 | `python main.py find . -newer w2l/cli.py` |
+| `-empty` | 空文件或空目录 | `python main.py find . -empty` |
+| `-true` / `-false` | 恒真 / 恒假 | `python main.py find . -true` |
+| `-prune` | 命中后不再进入该目录 | `python main.py find . -type d -name __pycache__ -prune -o -print` |
+| `-print` / `-print0` | 打印路径，用 NUL 分隔 | `python main.py find . -print0` |
+| `-printf FORMAT` | 按格式打印 | `python main.py find . -printf '%f %s\n'` |
+| `-exec CMD ;` | 对每个匹配执行一次命令 | `python main.py find . -name '*.py' -exec echo {} \;` |
+| `-exec CMD +` | 把所有匹配攒成一批执行一次 | `python main.py find . -name '*.py' -exec echo {} +` |
+| `-delete` | 删除匹配的文件（隐含 `-depth`） | `python main.py find . -name '*.tmp' -delete` |
+| `-maxdepth N` | 最多往下走 N 层（操作数本身是第 0 层） | `python main.py find . -maxdepth 1` |
+| `-mindepth N` | 不判定比 N 层浅的文件 | `python main.py find . -mindepth 2` |
+| `-depth` | 后序遍历（先子项后父项） | `python main.py find . -depth` |
+| `-H` / `-L` / `-P` | 符号链接处理方式（接受但不改行为，见下方说明） | `python main.py find . -P -name '*.py'` |
+| `-a` / `-and` | 与 | `python main.py find . -name '*.py' -a -type f` |
+| `-o` / `-or` | 或 | `python main.py find . -name '*.py' -o -name '*.md'` |
+| `!` / `-not` | 非 | `python main.py find . ! -name '*.py'` |
+| `( )` | 分组 | `python main.py find . \( -name '*.py' -o -name '*.md' \) -print` |
+
+行为细节对齐 GNU findutils 4.10：
+
+- **表达式是语言，不是选项**：路径写在前面（连续的、不以 `-` 开头的参数），从第一个像选项的参数开始算表达式。路径写在表达式后面会报错。
+- **运算符优先级**：`!` 最高，`-a` 次之，`-o` 最低；两个谓词挨着写默认是 `-a`。
+- **隐式 `-print`**：表达式里除了 `-prune` 之外没有别的动作时，自动在整条表达式后面接一个 `-print`；`-prune` 本身不算动作，所以 `find . -type d -prune` 仍会打印命中的目录。
+- **动作会截断与运算**：`-print` 这类动作恒为真，且一旦执行就不再算同一层 `and` 链的右半边——所以 `-name '*.txt' -print -o -name '*.md' -print` 只会各打印一次。
+- **遍历顺序**：按目录项的原始顺序（和 GNU 的 readdir 顺序一致），默认先序；`-depth` 改成后序。
+- **`-size` 向上取整**：不带单位时按 512 字节块算，`-size 1` 命中 1~512 字节的文件；带 `c` 是精确字节数，`k`/`M`/`G` 分别是 1024/1024²/1024³ 字节，也都向上取整。
+- **`-exec` 两种终止符**：`;` 每个文件跑一次，`+` 攒成一批跑一次；命令里没有 `{}` 时路径自动追加到末尾。
+- **`-prune` 只挡下降**：命中后不再进入该目录，但这个目录本身仍会被打印和判定。
+- **`-mindepth` 只挡判定**：比 N 层浅的文件不参与表达式求值，但仍然会被遍历下去。
+- **`-printf` 支持的指令**：`%p` 路径、`%f` 文件名、`%h` 所在目录、`%s` 字节数、`%y` 类型（`f`/`d`）、`%T@` 纪元秒数、`%t` 修改时间、`%%` 字面量，以及 `\n`、`\t`、`\\` 等转义；不认识的指令按字面量原样输出（与 GNU 一致）。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **`-type` 只认 `f` 和 `d`**：符号链接、块设备、字符设备、FIFO 在 Windows 上不存在。
+- **`-H` / `-L` / `-P` 接受但不改变行为**：Windows 上创建符号链接需要管理员权限（`os.symlink` 直接报 WinError 1314），符号链接目录遍历的收益远小于引入环路风险，所以这三个选项只做兼容接收。
+- **目录的大小按 0 算**：Windows 的目录 `st_size` 不稳定（空目录是 0，条目一多就变成 4096），GNU 侧看到的目录大小恒为 0；这里统一按 0 处理，避免同一条命令的结果随目录内容变化。
+- **`-mmin` 的整分钟计数把当前这一分钟算作第 1 分钟**：GNU findutils 4.10 实测，90 秒大的文件落在 `-mmin 2` 而不是 `-mmin 1`（而 `-mtime` 的天数计数没有这个偏移）；本实现按实测口径来，`-mmin +N` / `-mmin -N` 仍按 GNU 的自然语义（大于 N 分钟 / 小于 N 分钟）。
+- **`-exec` 在 Windows 上退回 `cmd /c`**：GNU 直接 fork/exec 目标程序不走 shell，但 Windows 上 `echo`、`dir`、`type` 是内建命令，没有对应的可执行文件；找不到可执行文件时这里改用 `cmd /c` 执行，整条命令作为一个参数传过去，中文路径才不会变成 GBK 字节。
+- **打印路径用正斜杠**：Windows 的路径分隔符是反斜杠，这里统一按 GNU 的样子输出正斜杠。
+- **什么都不匹配时返回退出码 1**（GNU 返回 0），遵循本项目「无结果返回 1」的约定；`-delete` 这类只做动作不打印的用法按「命中了就算有结果」算，返回 0。
+- **操作数不存在时报错并返回退出码 2**（GNU 返回 1），沿用本项目「用法或运行错误返回 2」的约定。
+- **`-printf` 只支持 `%T@` 不支持 `%T`**：GNU findutils 4.10 的 MSYS 构建遇到单独的 `%T` 会直接报 `memory exhausted` 崩掉，纪元秒数要用 `%T@`。
+
 ## 目录结构
 
 ```
@@ -304,7 +366,8 @@ Windows-to-Linux/
 │       ├── cat.py           # cat 实现
 │       ├── head.py          # head 实现
 │       ├── tail.py          # tail 实现
-│       └── wc.py            # wc 实现
+│       ├── wc.py            # wc 实现
+│       └── find.py          # find 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -313,6 +376,7 @@ Windows-to-Linux/
 │   ├── test_head.py
 │   ├── test_tail.py
 │   ├── test_wc.py
+│   ├── test_find.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -375,7 +439,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
