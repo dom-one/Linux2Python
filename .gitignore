@@ -11,3 +11,5 @@ venv/
 .vscode/
 AI/锁/
 AI/数据/
+AI/脚本/_data_*/
+AI/脚本/_t*_*.txt
