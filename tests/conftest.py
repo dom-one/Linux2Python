@@ -19,6 +19,8 @@ from w2l.commands.ls import build_parser as build_ls_parser  # noqa: E402
 from w2l.commands.ls import ls  # noqa: E402
 from w2l.commands.tail import build_parser as build_tail_parser  # noqa: E402
 from w2l.commands.tail import tail  # noqa: E402
+from w2l.commands.tree import build_parser as build_tree_parser  # noqa: E402
+from w2l.commands.tree import tree  # noqa: E402
 from w2l.commands.wc import build_parser as build_wc_parser  # noqa: E402
 from w2l.commands.wc import wc  # noqa: E402
 from w2l.context import RunContext  # noqa: E402
@@ -133,6 +135,20 @@ def run_find(argv, cwd=None):
         stdin=io.StringIO(""),
     )
     code = find(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_tree(argv, cwd=None):
+    """跑一次 tree 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_tree_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(""),
+    )
+    code = tree(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
 
 

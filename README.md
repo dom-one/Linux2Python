@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -39,6 +39,10 @@ python main.py find w2l -name '*.py'    # 按文件名找文件
 python main.py find . -type f -size +1k # 按类型和大小找文件
 python main.py find . -name '*.log' -mtime +7   # 找 7 天前改过的日志
 python main.py find . -type d -name __pycache__ -prune -o -print  # 跳过目录
+python main.py tree w2l                 # 树形列出目录
+python main.py tree -L 2 w2l            # 只往下看两层
+python main.py tree -d w2l              # 只看目录
+python main.py tree -I '__pycache__' w2l  # 跳过匹配的名字
 ```
 
 ## 全局命令 `dmlinux`
@@ -344,6 +348,62 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **什么都不匹配时返回退出码 1**（GNU 返回 0），遵循本项目「无结果返回 1」的约定；`-delete` 这类只做动作不打印的用法按「命中了就算有结果」算，返回 0。
 - **操作数不存在时报错并返回退出码 2**（GNU 返回 1），沿用本项目「用法或运行错误返回 2」的约定。
 - **`-printf` 只支持 `%T@` 不支持 `%T`**：GNU findutils 4.10 的 MSYS 构建遇到单独的 `%T` 会直接报 `memory exhausted` 崩掉，纪元秒数要用 `%T@`。
+
+## tree 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 以树形列出当前目录 | `python main.py tree` |
+| （操作数） | 要列出的目录，可给多个 | `python main.py tree w2l` |
+| `-a` | 显示隐藏文件（名字以 . 开头） | `python main.py tree -a w2l` |
+| `-d` | 只列目录 | `python main.py tree -d w2l` |
+| `-f` | 打印完整路径 | `python main.py tree -f w2l` |
+| `-F` | 给名字追加类型标记（`/` `*` `@`） | `python main.py tree -F w2l/commands` |
+| `-i` | 不画缩进线 | `python main.py tree -i w2l` |
+| `-l` | 跟随指向目录的符号链接 | `python main.py tree -l w2l` |
+| `-L N` | 根目录往下最多显示 N 层 | `python main.py tree -L 1 w2l` |
+| `-I PATTERN` | 不列匹配通配符的条目，可重复 | `python main.py tree -I '__pycache__' w2l` |
+| `-P PATTERN` | 只列匹配通配符的文件，可重复 | `python main.py tree -P '*.py' w2l` |
+| `--ignore-case` | 通配符匹配忽略大小写 | `python main.py tree -I '*.PY' --ignore-case w2l` |
+| `--dirsfirst` | 目录排在文件前面 | `python main.py tree --dirsfirst w2l` |
+| `--noreport` | 不打末尾的统计行 | `python main.py tree --noreport w2l` |
+| `--charset=ascii` | 用 ASCII 画线字符（默认 utf8） | `python main.py tree --charset=ascii w2l` |
+| `-p` | 打印权限位 | `python main.py tree -p w2l` |
+| `-s` | 打印文件大小（字节） | `python main.py tree -s w2l/commands` |
+| `-h` | 以 K/M/G 显示大小（隐含 `-s`） | `python main.py tree -h w2l/commands` |
+| `-D` | 打印最后修改时间 | `python main.py tree -D w2l` |
+| `-t` | 按修改时间排序，旧的在前 | `python main.py tree -t w2l` |
+| `-r` | 反向输出排序结果 | `python main.py tree -r w2l` |
+| `-U` | 不排序，按目录顺序输出 | `python main.py tree -U w2l` |
+| `-x` | 不跨越文件系统 | `python main.py tree -x w2l` |
+
+行为细节对齐 GNU tree 2.3.x：
+
+- **根目录单独一行**：第一行是操作数原样（`tree w2l` 的第一行就是 `w2l`），下面才是各层条目。
+- **连接符**：同一层里非最后一个条目用「├── 」，最后一个用「└── 」；祖先层后面还有兄弟时才画竖线，否则留空。
+- **隐藏文件默认不列**：名字以 . 开头的要 `-a` 才列；`.` 与 `..` 永远不列（这一点与 `ls -a` 不同）。
+- **默认按名字排序**：目录与文件混在一起排，`--dirsfirst` 才把目录提到前面。
+- **`-t` 是旧的在前**：与 `ls -t`（新的在前）相反，这是 GNU tree 的口径。
+- **`-r` 反向的是整个排序结果**：目录连同它的子树一起换到后面。
+- **`-L N` 的层数从根目录往下数**：`tree -L 1` 只列根目录的直接子项，且不展开子目录。
+- **`-I` 命中目录时整个目录连内容一起去掉**；`-P` 只筛文件，目录照旧列出，某个目录命中 `-P` 时它下面的内容全部列出。
+- **通配符**：`*` 不跨 `/`，`**` 跨 `/`，`?` 匹配任意一个字符，`[...]` 是字符类（`^` 取反），`|` 分隔多个候选；模式里也可以带路径。
+- **末尾统计行**：先空一行，再打 `N directories, M files`（数目为 1 时用单数）；`-d` 只打目录数。
+- **根目录为空时不计入目录数**：空目录的统计行是 `0 directories, 0 files`。
+- **多个操作数**：各自成树，末尾只有一行合计统计。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **画线字符默认 UTF-8**：GNU 在 C 区域设置下默认用 ASCII（`|--` 和 `` `-- ``），本项目输出统一 UTF-8，所以默认用「├── 」；要 ASCII 用 `--charset=ascii`。
+- **UTF-8 竖线后面跟的是不换行空格**：与 GNU 的字节输出一致，复制到别处可能对不齐。
+- **目录的大小按 0 算**：Windows 的目录 `st_size` 不稳定（空目录 0、条目一多就 4096），不统一的话同一条命令的结果会随目录内容变化。
+- **权限位取自 Windows 合成出来的 `st_mode`**：目录是 `drwxrwxrwx`、普通文件是 `-rw-rw-rw-`，不等价于 POSIX 权限。
+- **没有属主/属组列**：Windows 没有 POSIX 的属主/属组语义。
+- **操作数是文件时报错**：GNU 会打出 `名字  [error opening dir]` 再照常统计，本实现直接报「不是目录」并返回退出码 2。
+- **排序按码位序**：GNU 用 `strcoll`（区域设置相关，UTF-8 区域设置下大小写不敏感），本实现按码位序排，与本项目的 `ls` 一致。
+- **`-x` 实际是不跨盘符**：Windows 的 `st_dev` 是卷标识，实测 C 盘与 E 盘的值不同，所以 `-x` 能挡住跨盘的子目录。
+- **符号链接没法完整验证**：Windows 上创建符号链接要管理员权限（本机实测报 WinError 1314），所以 `-l` 的行为没法在本机验证。
+- **出错返回退出码 2**（GNU tree 也是 2），沿用本项目「用法或运行错误返回 2」的约定。
 
 ## 目录结构
 
