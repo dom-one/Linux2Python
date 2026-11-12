@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
 
 from w2l.commands.cat import build_parser as build_cat_parser  # noqa: E402
 from w2l.commands.cat import cat  # noqa: E402
+from w2l.commands.du import build_parser as build_du_parser  # noqa: E402
+from w2l.commands.du import du  # noqa: E402
 from w2l.commands.find import build_parser as build_find_parser  # noqa: E402
 from w2l.commands.find import find  # noqa: E402
 from w2l.commands.grep import build_parser, grep  # noqa: E402
@@ -150,6 +152,25 @@ def run_tree(argv, cwd=None):
     )
     code = tree(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
+
+
+def run_du(argv, cwd=None):
+    """跑一次 du 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_du_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(""),
+    )
+    code = du(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def build_du_namespace(argv):
+    """只解析 du 的参数，不执行指令，用于检查用法错误。"""
+    return build_du_parser().parse_args(list(argv))
 
 
 @pytest.fixture

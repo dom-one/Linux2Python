@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -43,6 +43,11 @@ python main.py tree w2l                 # 树形列出目录
 python main.py tree -L 2 w2l            # 只往下看两层
 python main.py tree -d w2l              # 只看目录
 python main.py tree -I '__pycache__' w2l  # 跳过匹配的名字
+python main.py du w2l                # 统计目录占用
+python main.py du -sh w2l tests      # 每个目录一行，人类可读
+python main.py du -sb w2l            # 按字节精确统计
+python main.py du -a -d 1 w2l        # 连文件一起列，只看第一层
+python main.py du -t 1M w2l          # 略过 1MB 以下的小目录
 ```
 
 ## 全局命令 `dmlinux`
@@ -405,6 +410,56 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **符号链接没法完整验证**：Windows 上创建符号链接要管理员权限（本机实测报 WinError 1314），所以 `-l` 的行为没法在本机验证。
 - **出错返回退出码 2**（GNU tree 也是 2），沿用本项目「用法或运行错误返回 2」的约定。
 
+## du 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 统计当前目录的占用 | `python main.py du` |
+| （操作数） | 要统计的路径，可给多个 | `python main.py du w2l tests` |
+| `-a` | 连普通文件一起列出 | `python main.py du -a w2l` |
+| `-c` | 末尾多打一行总计（`total`） | `python main.py du -c w2l` |
+| `-s` | 每个操作数只打一行总数 | `python main.py du -s w2l` |
+| `-d N` | 最多打印到第 N 层（操作数本身是第 0 层） | `python main.py du -d 1 w2l` |
+| `-h` | 以 K/M/G 显示大小（1024 进制） | `python main.py du -sh w2l` |
+| `--si` | 同 `-h`，但用 1000 进制（单位是小写 `k`） | `python main.py du --si w2l` |
+| `-b` | 以字节为单位显示 | `python main.py du -sb w2l` |
+| `-k` | 以 1K 为单位显示（默认） | `python main.py du -sk w2l` |
+| `-m` | 以 1M 为单位显示 | `python main.py du -sm w2l` |
+| `-B SIZE` | 以指定块大小为单位显示 | `python main.py du -B 100 w2l` |
+| `-t SIZE` | 小于阈值的条目不显示；给负数则只显示不大于它的条目 | `python main.py du -t 1M w2l` |
+| `-x` | 不跨越文件系统 | `python main.py du -x w2l` |
+| `-S` | 目录大小不含子目录 | `python main.py du -S w2l` |
+| `-l` | 硬链接的文件重复计入 | `python main.py du -l w2l` |
+| `-L` / `-H` / `-P` | 符号链接的处理方式（见下方说明） | `python main.py du -L w2l` |
+| `--time` | 多打一列最后修改时间 | `python main.py du --time w2l` |
+| `-0` | 用 NUL 而不是换行分隔输出 | `python main.py du -0 w2l` |
+| `--apparent-size` | 按文件字节数统计（本实现默认口径，写上也不改变行为） | `python main.py du --apparent-size w2l` |
+
+行为细节对齐 GNU coreutils 8.32 的 du（全部经 Git Bash 的 `/usr/bin/du` 实跑对照，82 组用例输出逐条一致）：
+
+- **输出结构**：每行是「大小<TAB>路径」，目录排在它自己的内容后面（后序遍历）。
+- **统计口径是表观大小**：文件按字节数算，目录自身按 0 算，等价于 GNU 的 `--apparent-size`。
+- **默认块大小 1K**：显示时把字节数向上取整到块；`-b` 按字节、`-k`/`-m`/`-B` 自定。
+- **`-a` 连文件一起列**，`-s` 每个操作数只给一行总数，`-c` 在所有操作数之后追加一行 `total`。
+- **`-d N` 只限制打印**：统计照样算到底，所以 `-d 1` 里 `w2l/commands` 显示的仍是它自己的总数。
+- **`-t` 的阈值跟字节数比**，不是跟块数比：`-t 1K` 会留下块数 1、字节数 10 的小文件（GNU 实测如此）。
+- **负阈值只留不大于它的条目**：`-t -1K` 只显示 1K 以内的条目。
+- **`-h` 的尾数向上取整到一位小数**，取整后达到 10 就改成整数：`10239` 字节是 `10K` 而不是 `9.9K`；`--si` 用 1000 进制且单位是小写 `k`。
+- **`-h` 与 `--si` 谁靠后听谁的**：GNU 里这两个选项都设置「人类可读」，命令行上更靠后的那个决定进制。
+- **`-S` 让目录大小不含子目录**：目录只算自己这一层的文件。
+- **同一个文件只算一次**：多个操作数覆盖同一棵树时，后来的那份既不重复统计也不输出；`-l` 打开后每次都算。
+- **`--time` 给目录的是子树里最新的修改时间**（含目录自身的 mtime），不是目录自己的 mtime。
+- **`-s` 与 `-d N` 冲突**：`-s` 等于 `--max-depth=0`，跟 `-d 1` 以上矛盾，本实现按用法错误处理。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **默认报的是文件字节数，不是磁盘占用**：GNU 默认报的是「文件占了几个块」（按文件系统块大小向上取整），Windows 的 Python 拿不到这个数——`os.stat_result` 没有 `st_blocks`，MSYS 那个 `st_blocks` 是 MSYS 模拟层的产物、跟 NTFS 的真实分配对不上。所以本实现默认就按文件字节数统计，等价于 GNU 的 `--apparent-size`；要精确字节数用 `-b`。
+- **目录的大小按 0 算**：与本项目的 `find`、`tree` 一致。
+- **同层条目按名字排序**：GNU 用的是目录原始顺序（NTFS 上是哈希序，基本随机），本实现按名字排，输出才稳定。
+- **退出码**：操作数不存在报「用法或运行错误」返回 2（GNU 返回 1）；所有条目都被 `-t` 滤掉时按本项目「无结果返回 1」的约定返回 1（GNU 返回 0）。
+- **`-L` / `-H` / `-P` 没法完整验证**：Windows 上创建符号链接要管理员权限（`os.symlink` 报 WinError 1314），所以符号链接相关的行为在本机没法验证。
+- **`-x` 实际是不跨盘符**：Windows 的 `st_dev` 是卷标识，实测 C 盘与 E 盘的值不同，所以 `-x` 能挡住跨盘的子目录。
+
 ## 目录结构
 
 ```
@@ -427,7 +482,9 @@ Windows-to-Linux/
 │       ├── head.py          # head 实现
 │       ├── tail.py          # tail 实现
 │       ├── wc.py            # wc 实现
-│       └── find.py          # find 实现
+│       ├── find.py          # find 实现
+│       ├── tree.py          # tree 实现
+│       └── du.py            # du 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -437,6 +494,8 @@ Windows-to-Linux/
 │   ├── test_tail.py
 │   ├── test_wc.py
 │   ├── test_find.py
+│   ├── test_tree.py
+│   ├── test_du.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -499,7 +558,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`、`du`、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
