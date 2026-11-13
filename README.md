@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -48,6 +48,10 @@ python main.py du -sh w2l tests      # 每个目录一行，人类可读
 python main.py du -sb w2l            # 按字节精确统计
 python main.py du -a -d 1 w2l        # 连文件一起列，只看第一层
 python main.py du -t 1M w2l          # 略过 1MB 以下的小目录
+python main.py sed 's/foo/bar/g' w2l/cli.py   # 行内替换
+python main.py sed -n '\|TODO|p' README.md   # 只打印含 TODO 的行
+python main.py sed -i 's/[ \t]*$//' app.log   # 原地去掉行尾空白
+python main.py sed -e 's/a/b/' -e 's/c/d/' notes.txt
 ```
 
 ## 全局命令 `dmlinux`
@@ -460,6 +464,67 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **`-L` / `-H` / `-P` 没法完整验证**：Windows 上创建符号链接要管理员权限（`os.symlink` 报 WinError 1314），所以符号链接相关的行为在本机没法验证。
 - **`-x` 实际是不跨盘符**：Windows 的 `st_dev` 是卷标识，实测 C 盘与 E 盘的值不同，所以 `-x` 能挡住跨盘的子目录。
 
+## sed 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 按脚本逐行处理输入并输出，不给文件时读标准输入 | `python main.py sed 's/foo/bar/' w2l/cli.py` |
+| （脚本） | 要执行的脚本，可用 `;` 或换行分隔多条命令 | `python main.py sed 's/a/b/;s/c/d/' w2l/registry.py` |
+| `-e SCRIPT` | 追加一段脚本，可给多次；给了 `-e` 之后第一个参数就是文件名 | `python main.py sed -e 's/a/b/' -e 's/b/c/' w2l/registry.py` |
+| `-f FILE` | 从文件读脚本，可给多次 | `python main.py sed -f edits.sed w2l/cli.py` |
+| `-n` | 不自动打印每一行（只打脚本里 `p` 出来的行） | `python main.py sed -n '\|TODO\|p' README.md` |
+| `-r` / `-E` | 使用扩展正则 ERE，默认基本正则 BRE | `python main.py sed -r 's/(a)(b)/\2\1/' w2l/registry.py` |
+| `-s` | 每个文件单独处理（行号各自从头算），默认所有文件拼成一条流 | `python main.py sed -s -n '=' w2l/cli.py w2l/registry.py` |
+| `-i` | 原地修改文件 | `python main.py sed -i 's/old/new/g' app.log` |
+| `-i.后缀` | 原地修改并留一份带后缀的备份 | `python main.py sed -i.bak 's/old/new/g' app.log` |
+| `-b` | 二进制模式，保留行尾的 CR（默认按文本模式读，CR 会被去掉） | `python main.py sed -b 's/one/1/' app.log` |
+| `-z` | 用 NUL 而不是换行分隔输入行 | `python main.py sed -z 's/a/b/' app.log` |
+| `--follow-symlinks` | 原地修改时跟随符号链接（Windows 上无效，接收但不改变行为） | `python main.py sed --follow-symlinks -i 's/a/b/' app.log` |
+
+支持的脚本命令：
+
+| 命令 | 作用 | 示例 |
+| --- | --- | --- |
+| `s/正则/替换/标志` | 替换；标志有 `g`（全部）、`p`（替换后打印）、`i`/`I`（忽略大小写）、`N`（只换第 N 个） | `sed 's/a/b/g'` |
+| `y/原串/新串/` | 逐字符转写，两个串长度必须一样 | `sed 'y/abc/xyz/'` |
+| `p` | 打印当前行 | `sed -n '/warn/p'` |
+| `d` | 删除当前行 | `sed '/^#/d'` |
+| `n` / `N` | 读下一行替换模式空间 / 把下一行接到模式空间后面 | `sed 'N;s/\n/ /;p'` |
+| `=` | 打印当前行号 | `sed -n '=' README.md` |
+| `q` / `Q` | 退出（`q` 结束本轮再退，`Q` 立刻退）；`q N` 指定退出码 | `sed '2q'` |
+| `a` / `i` / `c` | 追加 / 插入 / 替换文本 | `sed '1a\备注'` |
+| `b 标签` / `t 标签` / `T 标签` | 无条件跳转 / 替换成功才跳 / 替换没成功才跳 | `sed 't end'` |
+| `: 标签` | 定义标签 | `sed ':end'` |
+| `{ ... }` | 命令块，可以整体加地址 | `sed '/x/{s/a/b/;d}'` |
+
+行为细节对齐 GNU sed 4.9（全部经 Git Bash 的 `/usr/bin/sed` 实跑对照，162 组用例输出逐条一致）：
+
+- **正则默认 BRE**：默认模式下 `\( \)` 是分组、`\|` 是或、`\+ \?` 是量词；未转义的 `( ) { } | + ?` 都是字面量；加 `-r` 切换为 ERE。
+- **替换默认只换每行的第一个匹配**，`g` 才换全部，`N` 换第 N 个（`0` 不合法，GNU 也报错）。
+- **`s` 不带 `g` 时整块模式空间只换第一个**：`s/\n/-/` 作用在 `N` 拼起来的多行模式空间上时，只换第一个换行符。
+- **空匹配紧跟在非空匹配后面不算一次匹配**：`s/.*/X/g` 只换一个 `X`，不是两个（Python 的 `re` 不是这个规则，实现里自己走了一遍匹配）。
+- **`-n` 只关掉自动打印**，`a` / `i` / `c` 的文本、`=` 的行号照样输出。
+- **`n` 先打印当前模式空间再读下一行**，`N` 把下一行用换行接到模式空间后面；`N` 读到末尾就收工（当前模式空间照常打印）。
+- **`{ }` 块的地址只在进块时判一次**：块里的命令改过模式空间之后，块地址不再跟着重新判定（GNU 把整块编译成一条命令）。
+- **范围地址**：终点是正则时不在起始行上试；终点永远匹配不到就延伸到文件末尾；起点匹配不到则一行都不输出。
+- **地址 `0` 表示第一行之前**，所以 `0,/re/` 这种范围从第 1 行开始。
+- **`q N` 可以指定退出码**，`q` / `Q` 都会停掉后面的读取。
+- **替换串里的 `&` 是整个匹配**，`\1`-`\9` 是分组，`\U \L \u \l \E` 控大小写，`\n` `\t` 是换行与制表符。
+- **分隔符可以换**：`s|a|b|`、`s#a#b#`、`s,a,b,` 都行；分隔符本身用 `\` 转义。
+- **地址里的正则也能换分隔符**：`/re/` 之外，`\|re|`、`%re%` 这种写法同样认（GNU 也认），写脚本时挑个不跟路径冲突的分隔符更省事。
+- **`a` / `i` / `c` 的文本里 `\n` `\t` `\\` 会被展开**，也支持 GNU 的单行写法 `1a 文本`。
+- **多文件默认拼成一条流**，行号连续；`-s` 让每个文件各算各的行号。
+- **末行没有换行符时输出也不补**（GNU 实测如此）。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **文本模式读文件时行尾的 CR 会被去掉**（跟 GNU 在 Windows 上默认按文本模式读一致）；要保留 CR 用 `-b`。
+- **退出码**：脚本写错、文件读不到、目录当文件用都返回 2（GNU 分别返回 1、2、4），沿用本项目「用法或运行错误返回 2」的约定；正常处理完返回 0（GNU 也是 0，不是本项目「无结果返回 1」那套）。
+- **`-i` 与 `-n` 一起用会把文件清空**：`-n` 下没人往标准输出写，而原地修改写的就是标准输出，GNU 实测同样把文件清空。
+- **不支持的指令会明确报错**：保留区相关（`h` `H` `g` `G` `x`）、读写文件（`r` `R` `w` `W`）、执行命令（`e`）、`s` 的 `w`/`e` 标志都不支持，报错而不是悄悄忽略。
+- **`-i` 不带后缀时不留备份**，带后缀时备份写在原文件旁边。
+- **在 Git Bash 里用 `/re/` 写地址会被 MSYS 改写**：`python main.py sed -n '/TODO/p' README.md` 里的 `/TODO/p` 会被 MSYS 运行时当成 POSIX 路径，改写成 `E:/software/Git/Git/TODO/p` 再交给 Python，脚本就废了。GNU sed 自身是 MSYS 程序，不受这层改写影响，所以「在 Git Bash 里 GNU sed 好使、这里不好使」。两种绕法：地址改用别的分隔符（`\|TODO\|p`，本实现与 GNU 都支持），或者给命令加 `MSYS_NO_PATHCONV=1`。
+
 ## 目录结构
 
 ```
@@ -484,7 +549,8 @@ Windows-to-Linux/
 │       ├── wc.py            # wc 实现
 │       ├── find.py          # find 实现
 │       ├── tree.py          # tree 实现
-│       └── du.py            # du 实现
+│       ├── du.py            # du 实现
+│       └── sed.py           # sed 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -496,6 +562,7 @@ Windows-to-Linux/
 │   ├── test_find.py
 │   ├── test_tree.py
 │   ├── test_du.py
+│   ├── test_sed.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -558,7 +625,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`cp`、`mv`、`rm`、`chmod`、`sed`（行内替换）、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`cp`、`mv`、`rm`、`chmod`、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 

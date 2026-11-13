@@ -19,6 +19,9 @@ from w2l.commands.head import build_parser as build_head_parser  # noqa: E402
 from w2l.commands.head import head  # noqa: E402
 from w2l.commands.ls import build_parser as build_ls_parser  # noqa: E402
 from w2l.commands.ls import ls  # noqa: E402
+from w2l.commands.sed import build_parser as build_sed_parser  # noqa: E402
+from w2l.commands.sed import sed  # noqa: E402
+from w2l.commands.sed import split_inplace  # noqa: E402
 from w2l.commands.tail import build_parser as build_tail_parser  # noqa: E402
 from w2l.commands.tail import tail  # noqa: E402
 from w2l.commands.tree import build_parser as build_tree_parser  # noqa: E402
@@ -171,6 +174,20 @@ def run_du(argv, cwd=None):
 def build_du_namespace(argv):
     """只解析 du 的参数，不执行指令，用于检查用法错误。"""
     return build_du_parser().parse_args(list(argv))
+
+
+def run_sed(argv, cwd=None, stdin_text=""):
+    """跑一次 sed 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_sed_parser().parse_args(split_inplace(list(argv)))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(stdin_text),
+    )
+    code = sed(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
 
 
 @pytest.fixture
