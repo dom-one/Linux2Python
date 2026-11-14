@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from w2l.commands.awk_lite import awk_lite  # noqa: E402
+from w2l.commands.awk_lite import build_parser as build_awk_lite_parser  # noqa: E402
 from w2l.commands.cat import build_parser as build_cat_parser  # noqa: E402
 from w2l.commands.cat import cat  # noqa: E402
 from w2l.commands.du import build_parser as build_du_parser  # noqa: E402
@@ -187,6 +189,20 @@ def run_sed(argv, cwd=None, stdin_text=""):
         stdin=io.StringIO(stdin_text),
     )
     code = sed(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_awk_lite(argv, cwd=None, stdin_text=""):
+    """跑一次 awk-lite 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_awk_lite_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(stdin_text),
+    )
+    code = awk_lite(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
 
 

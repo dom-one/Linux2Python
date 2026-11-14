@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -52,6 +52,10 @@ python main.py sed 's/foo/bar/g' w2l/cli.py   # 行内替换
 python main.py sed -n '\|TODO|p' README.md   # 只打印含 TODO 的行
 python main.py sed -i 's/[ \t]*$//' app.log   # 原地去掉行尾空白
 python main.py sed -e 's/a/b/' -e 's/c/d/' notes.txt
+python main.py awk-lite '{print $1}' app.log     # 打印每行第一列
+python main.py awk-lite -F, '{print $NF}' access.csv  # 按逗号切分取最后一列
+python main.py awk-lite '/ERROR/ {print $2}' app.log   # 只处理含 ERROR 的行
+python main.py awk-lite -v n=2 '{print $n}' app.log    # 变量当字段号用
 ```
 
 ## 全局命令 `dmlinux`
@@ -525,6 +529,53 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **`-i` 不带后缀时不留备份**，带后缀时备份写在原文件旁边。
 - **在 Git Bash 里用 `/re/` 写地址会被 MSYS 改写**：`python main.py sed -n '/TODO/p' README.md` 里的 `/TODO/p` 会被 MSYS 运行时当成 POSIX 路径，改写成 `E:/software/Git/Git/TODO/p` 再交给 Python，脚本就废了。GNU sed 自身是 MSYS 程序，不受这层改写影响，所以「在 Git Bash 里 GNU sed 好使、这里不好使」。两种绕法：地址改用别的分隔符（`\|TODO\|p`，本实现与 GNU 都支持），或者给命令加 `MSYS_NO_PATHCONV=1`。
 
+## awk-lite 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （程序） | 要执行的程序：`{print ...}` 动作、`/正则/` 模式，或两者组合 | `python main.py awk-lite '{print $1}' w2l/commands/grep.py` |
+| （文件） | 输入文件，不给则读标准输入；`-` 表示标准输入 | `python main.py awk-lite '{print $1}' w2l/registry.py w2l/context.py` |
+| `-F SEP` | 字段分隔符，默认按空白串切分 | `python main.py awk-lite -F, '{print $NF}' w2l/registry.py` |
+| `--field-separator SEP` | 同 `-F` | `python main.py awk-lite --field-separator ';' '{print $1}' w2l/commands/du.py` |
+| `-v NAME=VALUE` | 给变量赋值，可给多次 | `python main.py awk-lite -v n=2 '{print $n}' w2l/registry.py` |
+| `--assign NAME=VALUE` | 同 `-v` | `python main.py awk-lite --assign OFS=';' '{print $1, $2}' w2l/commands/du.py` |
+
+支持的写法：
+
+| 写法 | 作用 | 示例 |
+| --- | --- | --- |
+| `{print $N}` | 打印第 N 个字段（从 1 开始） | `awk-lite '{print $2}'` |
+| `{print $NF}` | 最后一个字段 | `awk-lite '{print $NF}'` |
+| `{print $0}` / `{print}` | 打印整行（两者等价） | `awk-lite '{print}'` |
+| `{print $1, $2}` | 打印多个字段，中间用 OFS 连接（默认一个空格） | `awk-lite '{print $1, $2}'` |
+| `/正则/` | 模式：正则命中的行打整行 | `awk-lite '/ERROR/'` |
+| `/正则/ {print $1}` | 模式 + 动作：只对命中的行做动作 | `awk-lite '/ERROR/ {print $2}'` |
+| `NR` / `NF` / `FNR` / `FILENAME` | 内建变量：总行号 / 字段数 / 文件内行号 / 当前文件名 | `awk-lite '{print NR, NF}'` |
+| `$变量` | 变量值是数字时当字段号用 | `awk-lite -v n=2 '{print $n}'` |
+| `"文本"` / 数字 | 直接打印的常量 | `awk-lite '{print "共", NR}'` |
+
+行为细节对齐 GNU awk 5.3.2（全部经 Git Bash 的 `/usr/bin/awk` 实跑对照，64 组用例输出逐条一致）：
+
+- **默认分隔符是「空白串」**：连续的空格与制表符算一个分隔，两端的空白不算字段，所以空行的字段数是 0。
+- **`-F` 给单个字符时按字面量切**：`.` 就是一个点不是任意字符；连续出现会切出空字段（`a;;c` 切成 `a`、空、`c`）。
+- **`-F` 给多个字符时按正则切**（GNU 的规则），所以 `-F '..'` 会把每两个字符切一刀；`-F` 的值先解转义（`\t` 是制表符）。
+- **显式给一个空格当分隔符等同于默认**（都按空白串切）。
+- **`{print}` 等价于 `{print $0}`**；`print(...)` 的写法也认。
+- **字段号超出范围是空串**，不报错。
+- **模式是正则（ERE）**，只写模式不写动作时打整行。
+- **`NR` 跨文件连续，`FNR` 每个文件从头算**，`FILENAME` 是命令行里给的文件名。
+- **`-v` 赋的变量放在字段位置时**，值是数字就当字段号；不是数字就当字段名，本实现没有具名字段，按整行处理（与 GNU 结果一致）。
+- **多个文件按顺序处理**，中间的文件读不到会跳过并继续，最后统一返回 2。
+- **末行没有换行符照样处理**。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **输出走文本模式，换行是 CRLF**（GNU awk 输出 LF）；管道出去比对字节时别把它当成内容差异。
+- **文件按判定出的编码解码，GBK 文件输出 UTF-8**（GNU awk 按字节原样输出，不做解码）。
+- **退出码**：程序写错、文件读不到、目录当文件用都返回 2（GNU 分别返回 1、2、0，目录只是警告后跳过）；正常处理完返回 0（没有输出也是 0，不是本项目「无结果返回 1」那套）。
+- **不支持的写法明确报错**：算术运算、字符串拼接、`BEGIN`/`END`、自定义函数、数组、`printf` 都不支持，报错而不是悄悄忽略。
+- **在 Git Bash 里以 `/` 开头的程序会被 MSYS 改写成路径**：`python main.py awk-lite '/^import/ {print $2}' w2l/entry.py` 里的 `/^import/ ...` 会被当成 POSIX 路径，改写成 `E:/software/Git/Git/^import/ {print $2}` 再交给 Python，程序就废了（本实现会明确报错，不会静默算错）。绕法：给命令加 `MSYS_NO_PATHCONV=1`。
+
 ## 目录结构
 
 ```
@@ -550,7 +601,8 @@ Windows-to-Linux/
 │       ├── find.py          # find 实现
 │       ├── tree.py          # tree 实现
 │       ├── du.py            # du 实现
-│       └── sed.py           # sed 实现
+│       ├── sed.py           # sed 实现
+│       └── awk_lite.py      # awk-lite 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -563,6 +615,7 @@ Windows-to-Linux/
 │   ├── test_tree.py
 │   ├── test_du.py
 │   ├── test_sed.py
+│   ├── test_awk_lite.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -625,7 +678,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`cp`、`mv`、`rm`、`chmod`、`awk-lite`（字段投影）。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`、`mv`、`rm`、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
