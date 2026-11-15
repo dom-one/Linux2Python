@@ -56,6 +56,10 @@ python main.py awk-lite '{print $1}' app.log     # 打印每行第一列
 python main.py awk-lite -F, '{print $NF}' access.csv  # 按逗号切分取最后一列
 python main.py awk-lite '/ERROR/ {print $2}' app.log   # 只处理含 ERROR 的行
 python main.py awk-lite -v n=2 '{print $n}' app.log    # 变量当字段号用
+python main.py cp w2l/registry.py w2l/registry.py.bak  # 复制文件
+python main.py cp -r w2l/commands backup/       # 递归复制目录
+python main.py cp -v -p README.md docs/README.md        # 保住时间戳并显示过程
+python main.py cp -n --parents w2l/cli.py backup/        # 保留路径层级且不覆盖
 ```
 
 ## 全局命令 `dmlinux`
@@ -576,6 +580,55 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **不支持的写法明确报错**：算术运算、字符串拼接、`BEGIN`/`END`、自定义函数、数组、`printf` 都不支持，报错而不是悄悄忽略。
 - **在 Git Bash 里以 `/` 开头的程序会被 MSYS 改写成路径**：`python main.py awk-lite '/^import/ {print $2}' w2l/entry.py` 里的 `/^import/ ...` 会被当成 POSIX 路径，改写成 `E:/software/Git/Git/^import/ {print $2}` 再交给 Python，程序就废了（本实现会明确报错，不会静默算错）。绕法：给命令加 `MSYS_NO_PATHCONV=1`。
 
+## cp 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 复制文件；目标是已存在的目录时落成「目录/源名」 | `python main.py cp w2l/registry.py w2l/registry.py.bak` |
+| （无） | 目标不存在时，目标就是新文件本身 | `python main.py cp w2l/entry.py w2l/entry.py.bak` |
+| `-r` / `-R` / `--recursive` | 递归复制目录（不给 `-r` 遇到目录会报错跳过） | `python main.py cp -r w2l/commands backup/` |
+| `-a` / `--archive` | 归档模式：递归 + 保留属性 + 不解引用符号链接 | `python main.py cp -a w2l/commands backup/` |
+| `-p` | 保留权限与时间戳 | `python main.py cp -p w2l/context.py w2l/context.py.bak` |
+| `--preserve=模式列表` | 只保留指定属性，可选 `mode`/`timestamps`/`ownership`/`links`/`context`/`xattr`/`all` | `python main.py cp --preserve=timestamps w2l/errors.py w2l/errors.py.bak` |
+| `--no-preserve=模式列表` | 不保留指定属性，可重复给 | `python main.py cp --no-preserve=mode w2l/errors.py w2l/errors.py.bak` |
+| `-i` / `--interactive` | 覆盖已存在的文件前问一句 | `python main.py cp -i w2l/cli.py w2l/cli.py.bak` |
+| `-f` / `--force` | 强制覆盖（先去掉目标的只读属性） | `python main.py cp -f w2l/cli.py w2l/cli.py.bak` |
+| `-n` / `--no-clobber` | 不覆盖已存在的文件 | `python main.py cp -n w2l/cli.py w2l/cli.py.bak` |
+| `-u` / `--update` | 仅当源比目标新时才复制 | `python main.py cp -u w2l/cli.py w2l/cli.py.bak` |
+| `-v` / `--verbose` | 逐条打印「源 -> 目标」 | `python main.py cp -v w2l/cli.py w2l/cli.py.bak` |
+| `-t` / `--target-directory=目录` | 把目标目录写死，可给多个源 | `python main.py cp -t backup/ w2l/cli.py w2l/context.py` |
+| `-T` / `--no-target-directory` | 把目标当普通文件，不当目录 | `python main.py cp -T w2l/cli.py w2l/cli.py.bak` |
+| `-S` / `--suffix=后缀` | 覆盖前把旧目标改名加上该后缀 | `python main.py cp -S .bak w2l/cli.py w2l/cli.py.bak` |
+| `--parents` | 在目标下还原源的路径层级，并自己建父目录 | `python main.py cp --parents w2l/commands/grep.py backup/` |
+| `--remove-destination` | 复制前先删除目标 | `python main.py cp --remove-destination w2l/cli.py w2l/cli.py.bak` |
+
+行为细节对齐 GNU coreutils 8.32 的 cp（57 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t410_diff_cp.py`）：
+
+- **复制按字节进行**：二进制文件原样落地，GBK 文本也不会被改写（本项目其它解码型指令会先判编码，`cp` 不判）。
+- **目标是已存在的目录时，源落成「目录/源名」**；目标不存在时，目标就是新文件本身。
+- **多个源时目标必须是已存在的目录**，这条检查**先于**逐个源的存在性检查：`cp a.txt b.txt 某个文件` 报的是「目标不是目录」，哪怕中间的源根本不存在。
+- **拷目录必须给 `-r`**，否则报「未指定 -r，跳过目录」；这条检查也排在「目录覆盖文件」之前。
+- **源目录尾部的斜杠不影响落点**：`cp -r dir1/ 目标` 与 `cp -r dir1 目标` 一样，都是「目标/dir1」（GNU 8.32 实测如此）。
+- **`-r` 目录到不存在的目标时，目标目录本身就是那份目录的副本**，不再套一层同名目录（`cp -r dir1 newdest` 得到 `newdest/内层文件`）。
+- **目标已有同名目录时是「合并」**：同名文件被覆盖，目标多出来的文件保留，目录本身不报错。
+- **`-v` 逐条打印 `'源' -> '目标'`**：目录只在**被新建**时打印那一行，合并进已有目录时不打印；被 `-n` 跳过的文件也不打印。
+- **`-n` 压过 `-i`**：两个一起给时不提问，直接跳过已存在的文件。
+- **`-u` 只在源严格更新时复制**，mtime 相等算没更新。
+- **`-i` 只在目标已存在时提问**，提示写在标准错误上；应答 `y`/`Y`/`yes` 覆盖，`n`/`N`/`no`/空行跳过。
+- **`-p` / `-a` 保住源的时间戳**，目录的时间戳在内容写完**之后**再设，否则会被子文件的写入顶掉。
+- **`-S` 先把旧目标改名加后缀**再写新的（`cp -S .bak a b` 得到 `b` 是新内容、`b.bak` 是旧内容）。
+- **`--parents` 在目标下还原源的路径层级**，`--parents a.txt 目标` 得到「目标/a.txt」；目标必须已经是目录。
+- **把文件复制到它自己会被拒绝**；把目录复制进它自己也会被拒绝。
+- **父目录不存在时直接报错**（`cannot create`），不像 `--parents` 那样顺手建目录。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **退出码**：出错一律返回 2（GNU 返回 1），沿用本项目「用法或运行错误返回 2」的约定；成功返回 0。
+- **`-p` 的权限位落成只读属性**：Windows 没有 POSIX 权限位，`mode` 只能对应「只读 / 可写」这一位。
+- **`ownership` / `context` / `xattr` 接受但没有实际效果**：Windows 上没有属主、扩展属性这些语义。
+- **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），`-a` 的「不解引用」分支未实测。
+- **目录遍历顺序是排序后的**（GNU 用 readdir 顺序，本来就不确定），所以 `-v` 的打印顺序与 GNU 可能不同，落地内容完全一致。
+
 ## 目录结构
 
 ```
@@ -602,7 +655,8 @@ Windows-to-Linux/
 │       ├── tree.py          # tree 实现
 │       ├── du.py            # du 实现
 │       ├── sed.py           # sed 实现
-│       └── awk_lite.py      # awk-lite 实现
+│       ├── awk_lite.py      # awk-lite 实现
+│       └── cp.py            # cp 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -616,6 +670,7 @@ Windows-to-Linux/
 │   ├── test_du.py
 │   ├── test_sed.py
 │   ├── test_awk_lite.py
+│   ├── test_cp.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -678,7 +733,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`、`mv`、`rm`、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`、`rm`、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
