@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）、`cp`（GNU cp 风格子集）、`mv`（GNU mv 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -60,6 +60,10 @@ python main.py cp w2l/registry.py w2l/registry.py.bak  # 复制文件
 python main.py cp -r w2l/commands backup/       # 递归复制目录
 python main.py cp -v -p README.md docs/README.md        # 保住时间戳并显示过程
 python main.py cp -n --parents w2l/cli.py backup/        # 保留路径层级且不覆盖
+python main.py mv w2l/registry.py w2l/registry.py.bak  # 移动（改名）文件
+python main.py mv w2l/commands backup/       # 移动目录
+python main.py mv -v -b README.md docs/README.md        # 备份旧目标并显示过程
+python main.py mv -t build/ w2l/registry.py w2l/context.py   # 一次搬多个文件
 ```
 
 ## 全局命令 `dmlinux`
@@ -629,6 +633,44 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），`-a` 的「不解引用」分支未实测。
 - **目录遍历顺序是排序后的**（GNU 用 readdir 顺序，本来就不确定），所以 `-v` 的打印顺序与 GNU 可能不同，落地内容完全一致。
 
+## mv 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 移动文件；目标是已存在的目录时落成「目录/源名」 | `python main.py mv w2l/registry.py w2l/registry.py.bak` |
+| （无） | 目标不存在时，目标就是新名字本身 | `python main.py mv w2l/entry.py w2l/entry.py.bak` |
+| `-f` / `--force` | 强制覆盖（先去掉目标的只读属性） | `python main.py mv -f w2l/cli.py w2l/cli.py.bak` |
+| `-i` / `--interactive` | 覆盖已存在的目标前问一句 | `python main.py mv -i w2l/cli.py w2l/cli.py.bak` |
+| `-n` / `--no-clobber` | 不覆盖已存在的目标 | `python main.py mv -n w2l/cli.py w2l/cli.py.bak` |
+| `-u` / `--update` | 仅当源比目标新时才移动 | `python main.py mv -u w2l/cli.py w2l/cli.py.bak` |
+| `-v` / `--verbose` | 逐条打印「renamed 源 -> 目标」 | `python main.py mv -v w2l/cli.py w2l/cli.py.bak` |
+| `-b` / `--backup` | 覆盖前把旧目标改名备份（后缀 `~`） | `python main.py mv -b w2l/cli.py w2l/cli.py.bak` |
+| `-S` / `--suffix=后缀` | 备份后缀（默认 `~`，单独给 `-S` 就隐含开备份） | `python main.py mv -S .bak w2l/cli.py w2l/cli.py.bak` |
+| `-t` / `--target-directory=目录` | 把目标目录写死，可给多个源 | `python main.py mv -t backup/ w2l/cli.py w2l/context.py` |
+| `-T` / `--no-target-directory` | 把目标当普通文件，不当目录 | `python main.py mv -T w2l/cli.py w2l/cli.py.bak` |
+
+行为细节对齐 GNU coreutils 8.32 的 mv（68 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t510_diff_mv.py`）：
+
+- **移动按字节进行**：二进制文件原样落地，GBK 文本也不会被改写（同盘移动走 rename，文件属性与时间戳原样带过去）。
+- **目标是已存在的目录时，源落成「目录/源名」**；目标不存在时，目标就是新名字本身（目录也一样，整个目录改名）。
+- **多个源时目标必须是已存在的目录**，这条检查**先于**逐个源的存在性检查：`mv a.txt b.txt 某个文件` 报的是「目标不是目录」。
+- **GNU 的 mv 不合并目录**：目标下同名目录已存在且**非空**时报「目录非空」，不像 `cp` 那样逐个文件覆盖过去；同名目录**是空的**时移动照常进行（等于用源目录替换掉那个空目录）。
+- **源目录尾部的斜杠不影响落点**：`mv dir1/ 目标` 与 `mv dir1 目标` 一样，都是「目标/dir1」。
+- **`-v` 打印 `renamed '源' -> '目标'`**，整个目录只打印一行（不是逐个文件），带备份时同一行追加「(backup: '备份')」。
+- **`-n` 跳过已存在的目标**：连「目录非空」那种结构性错误也不会报，直接静默跳过，退出码仍是 0。
+- **`-u` 只在源严格更新时才移动**，mtime 相等算没更新（GNU 实测如此）。
+- **`-i` 只在目标已存在时提问**，提示写在标准错误上；应答 `y`/`Y`/`yes` 照搬，`n`/`N`/`no`/空行/其它一律跳过。
+- **`-i` 与 `-n` 同时给时互相清掉对方，后给的那个赢**：`-n -i` 会提示并照搬，`-i -n` 不提示也不搬（GNU 的 `cp` 与 `mv` 都是这个行为，实测）。
+- **`-b` 把旧目标改名加后缀备份**（默认 `~`），**`-S` 单独给就等于隐含开备份**；备份目录时是把旧目录改名成「目录名~」。
+- **把文件移动到它自己会被拒绝**（含 `./a.txt` 这种别名、含硬链接）；把目录移动进它自己的子目录也会被拒绝。
+- **父目录不存在时直接报错**，不会顺手建目录。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **退出码**：出错一律返回 2（GNU 返回 1），沿用本项目「用法或运行错误返回 2」的约定；成功返回 0。
+- **覆盖只读文件照样能搬**：GNU 的 mv 是直接 rename 过去，不看目标文件的权限位，Windows 上 rename 覆盖只读文件会失败，所以实现里先把目标的只读属性去掉。
+- **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），「移动符号链接本身」这条分支未实测。
+
 ## 目录结构
 
 ```
@@ -656,7 +698,8 @@ Windows-to-Linux/
 │       ├── du.py            # du 实现
 │       ├── sed.py           # sed 实现
 │       ├── awk_lite.py      # awk-lite 实现
-│       └── cp.py            # cp 实现
+│       ├── cp.py            # cp 实现
+│       └── mv.py            # mv 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -671,6 +714,7 @@ Windows-to-Linux/
 │   ├── test_sed.py
 │   ├── test_awk_lite.py
 │   ├── test_cp.py
+│   ├── test_mv.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -733,7 +777,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`、`rm`、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`（已完成）、`rm`、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 

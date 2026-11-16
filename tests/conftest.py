@@ -23,6 +23,8 @@ from w2l.commands.head import build_parser as build_head_parser  # noqa: E402
 from w2l.commands.head import head  # noqa: E402
 from w2l.commands.ls import build_parser as build_ls_parser  # noqa: E402
 from w2l.commands.ls import ls  # noqa: E402
+from w2l.commands.mv import build_parser as build_mv_parser  # noqa: E402
+from w2l.commands.mv import mv  # noqa: E402
 from w2l.commands.sed import build_parser as build_sed_parser  # noqa: E402
 from w2l.commands.sed import sed  # noqa: E402
 from w2l.commands.sed import split_inplace  # noqa: E402
@@ -219,6 +221,20 @@ def run_cp(argv, cwd=None, stdin_text=""):
         stdin=io.StringIO(stdin_text),
     )
     code = cp(namespace, ctx)
+    return code, out.getvalue(), err.getvalue()
+
+
+def run_mv(argv, cwd=None, stdin_text=""):
+    """跑一次 mv 指令，返回 (退出码, 标准输出, 标准错误)。"""
+    namespace = build_mv_parser().parse_args(list(argv))
+    out, err = io.StringIO(), io.StringIO()
+    ctx = RunContext(
+        cwd=Path(cwd or ROOT),
+        stdout=out,
+        stderr=err,
+        stdin=io.StringIO(stdin_text),
+    )
+    code = mv(namespace, ctx)
     return code, out.getvalue(), err.getvalue()
 
 
