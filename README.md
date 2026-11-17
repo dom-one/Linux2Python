@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）、`cp`（GNU cp 风格子集）、`mv`（GNU mv 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）、`cp`（GNU cp 风格子集）、`mv`（GNU mv 风格子集）、`rm`（GNU rm 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -64,6 +64,10 @@ python main.py mv w2l/registry.py w2l/registry.py.bak  # 移动（改名）文�
 python main.py mv w2l/commands backup/       # 移动目录
 python main.py mv -v -b README.md docs/README.md        # 备份旧目标并显示过程
 python main.py mv -t build/ w2l/registry.py w2l/context.py   # 一次搬多个文件
+python main.py rm w2l/registry.py.bak  # 删除文件
+python main.py rm -r build/       # 递归删除目录
+python main.py rm -v -f logs/*.tmp        # 忽略不存在的文件并显示过程
+python main.py rm -d empty_dir    # 删除空目录
 ```
 
 ## 全局命令 `dmlinux`
@@ -671,6 +675,43 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **覆盖只读文件照样能搬**：GNU 的 mv 是直接 rename 过去，不看目标文件的权限位，Windows 上 rename 覆盖只读文件会失败，所以实现里先把目标的只读属性去掉。
 - **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），「移动符号链接本身」这条分支未实测。
 
+## rm 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 删除文件 | `python main.py rm w2l/registry.py.bak` |
+| `-r` / `-R` / `--recursive` | 递归删除目录及其内容 | `python main.py rm -r build/` |
+| `-d` / `--dir` | 删除空目录（遇到普通文件也照删） | `python main.py rm -d empty_dir` |
+| `-v` / `--verbose` | 逐条打印「removed 'X'」 | `python main.py rm -v -r build/` |
+| `-f` / `--force` | 忽略不存在的文件与缺失的操作数，绝不询问 | `python main.py rm -f logs/*.tmp` |
+| `-i` | 每删一个之前都询问一次 | `python main.py rm -i w2l/registry.py.bak` |
+| `-I` | 只在删超过三个文件或递归删目录前询问一次 | `python main.py rm -I -r build/` |
+| `--interactive[=WHEN]` | 按 WHEN 决定何时询问：never / once / always | `python main.py rm --interactive=never w2l/registry.py.bak` |
+
+行为细节对齐 GNU coreutils 8.32 的 rm（49 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t620_diff_rm.py`）：
+
+- **不给 `-r` 时目录删不掉**，报「是一个目录」；`-f` 也**不**抑制这一条（`-f` 只忽略「文件本来就不存在」）。
+- **`-d` 删空目录**，目录非空时报「目录非空」；`-d` 遇到普通文件照删。
+- **`-r` 递归删除**：先进目录、再逐个子项、最后回头删目录本身。
+- **`-v` 打印 `removed 'X'` 与 `removed directory 'X'`**，文件先于目录；标签保留命令行给的写法（`./dir/...` 的 `./` 不丢）。
+- **`-f` 忽略不存在的文件**，缺操作数时也静默返回 0（GNU 同此）。
+- **`-i` 逐项询问**，提示写在标准错误上，顺序是「进目录 → 删文件 → 删目录」。应答只看**这一行的第一个字符**是不是 `y`/`Y`（` y` 前面带空格算不同意，输入结束按不同意算）。
+- **拒绝了某个文件，父目录照样会问**，父目录非空于是删不掉并报错（GNU 同此）；**拒绝了进入某个子目录**，那棵子树留下，父目录也不再询问。
+- **`-I` 只在操作数超过三个或递归时问一次**（三个文件时不问），问的是「要删几个参数」。
+- **`--interactive` 的取值只认 `never`/`no`/`none`、`once`、`always`/`yes`**，且必须写成 `--interactive=WHEN`；写成 `--interactive WHEN` 时 `WHEN` 是文件名（GNU 的 getopt_long 只认 `=` 形式）。
+- **后给的那个赢**：`--interactive=never` 不会关掉 `-f` 的「忽略不存在的文件」，而 `-f -i` 等于 `-i`、`-i -f` 等于 `-f`。
+- **命令行的最后一段是 `.` 或 `..` 时拒绝删除**（POSIX 要求），根目录也拒绝删（GNU 默认 `--preserve-root`）。
+- **文件不存在时直接报错**，不再追问（GNU 同此）。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **退出码**：出错一律返回 2（GNU 返回 1），沿用本项目「用法或运行错误返回 2」的约定；成功返回 0。
+- **提示语是中文**（GNU 是英文），与本项目的 `cp` / `mv` 保持一致；`-v` 的输出沿用 GNU 的英文原文。
+- **目录遍历顺序是排序后的**（GNU 用 readdir 顺序，本来就不确定），所以 `-v` 的打印顺序与 GNU 可能不同，落地内容完全一致。
+- **只读文件照样能删**：POSIX 的 `rm` 只看目录的写权限，Windows 上只读属性会挡住删除，所以删之前先把只读属性去掉。
+- **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），「删除符号链接本身」这条分支未实测。
+- **不支持 `--one-file-system` / `--preserve-root` / `--no-preserve-root`**：跨盘与根目录保护在本项目里按「一律不删根目录」处理。
+
 ## 目录结构
 
 ```
@@ -699,7 +740,8 @@ Windows-to-Linux/
 │       ├── sed.py           # sed 实现
 │       ├── awk_lite.py      # awk-lite 实现
 │       ├── cp.py            # cp 实现
-│       └── mv.py            # mv 实现
+│       ├── mv.py            # mv 实现
+│       └── rm.py            # rm 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -715,6 +757,7 @@ Windows-to-Linux/
 │   ├── test_awk_lite.py
 │   ├── test_cp.py
 │   ├── test_mv.py
+│   ├── test_rm.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -777,7 +820,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`（已完成）、`rm`、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`（已完成）、`rm`（已完成）、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 
