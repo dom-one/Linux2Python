@@ -176,6 +176,51 @@ def test_chmod_empty_permission_list_is_accepted(workdir):
     assert out == "mode of 'a.txt' changed from 0644 (rw-r--r--) to 0640 (rw-r-----)\n"
 
 
+def test_chmod_operator_inside_permission_list(workdir):
+    """GNU 允许权限串里再带运算符：a+rw-x 是「加 rw，再减 x」。"""
+    target = workdir / "a.txt"
+    target.write_text("hello\n", encoding="utf-8")
+
+    code, out, err = run_chmod(["-v", "a+rw-x", "a.txt"], cwd=workdir)
+
+    assert code == 0
+    assert err == ""
+    assert out == "mode of 'a.txt' changed from 0644 (rw-r--r--) to 0666 (rw-rw-rw-)\n"
+
+
+def test_chmod_operator_inside_permission_list_removes(workdir):
+    target = workdir / "a.txt"
+    target.write_text("hello\n", encoding="utf-8")
+
+    code, out, err = run_chmod(["-v", "a+x-r", "a.txt"], cwd=workdir)
+
+    assert code == 0
+    assert out == "mode of 'a.txt' changed from 0644 (rw-r--r--) to 0311 (-wx--x--x)\n"
+
+
+def test_chmod_setuid_bit_counts_as_unchanged(workdir):
+    """目标带 setuid 位时，GNU 只要写位状态没变就报 retained。"""
+    target = workdir / "a.txt"
+    target.write_text("hello\n", encoding="utf-8")
+
+    code, out, err = run_chmod(["-v", "4755", "a.txt"], cwd=workdir)
+
+    assert code == 0
+    assert out == "mode of 'a.txt' retained as 4755 (rwsr-xr-x)\n"
+
+
+def test_chmod_sticky_bit_only_applies_to_other(workdir):
+    """u+t 什么也不改（sticky 位只对 other 类有效），o+t 才算加上了。"""
+    target = workdir / "a.txt"
+    target.write_text("hello\n", encoding="utf-8")
+
+    code, out, _ = run_chmod(["-v", "u+t", "a.txt"], cwd=workdir)
+    assert out == "mode of 'a.txt' retained as 0644 (rw-r--r--)\n"
+
+    code, out, _ = run_chmod(["-v", "o+t", "a.txt"], cwd=workdir)
+    assert out == "mode of 'a.txt' retained as 1644 (rw-r--r-T)\n"
+
+
 def test_chmod_missing_file_reports_previous_file_mode(workdir):
     """GNU 的口径：打不开的文件报的原模式是上一个处理过的文件的模式。"""
     target = workdir / "a.txt"

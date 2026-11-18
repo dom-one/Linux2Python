@@ -29,8 +29,11 @@ from ..perms import MISSING_MODE, canonical_mode, mode_octal, perm_bits
 from ..registry import command
 
 _OCTAL_DIGITS = "01234567"
-_CLASS_MASK = {"u": 0o600, "g": 0o060, "o": 0o006}
+# 每一类权限的位掩码（含 rwx）与它在模式里的位移。
+_CLASS_BITS = {"u": 0o700, "g": 0o070, "o": 0o007}
+_CLASS_SHIFT = {"u": 6, "g": 3, "o": 0}
 _CLASS_SPECIAL = {"u": 0o4000, "g": 0o2000, "o": 0o1000}
+_ALL_CLASSES = 0o777
 _PERM_CHARS = "rwxXst"
 
 
@@ -87,7 +90,7 @@ def chmod(args: argparse.Namespace, ctx: RunContext) -> int:
 class _Clause:
     """符号模式里的一条子句，例如 u+w、go-w、a=rwx。"""
 
-    def __init__(self, who: int, op: str, perms: str, copy_from: int | None) -> None:
+    def __init__(self, who: int, op: str, perms: str, copy_from: str | None) -> None:
         self.who = who
         self.op = op
         self.perms = perms
@@ -97,7 +100,7 @@ class _Clause:
     def special_mask(self) -> int:
         """这条子句涉及的特殊位（setuid / setgid / sticky）。"""
         mask = 0
-        for name, bits in _CLASS_MASK.items():
+        for name, bits in _CLASS_BITS.items():
             if self.who & bits:
                 mask |= _CLASS_SPECIAL[name]
         return mask
@@ -107,8 +110,14 @@ class _Clause:
             # 复制写法（u+g、g=u）只在 '=' 时生效，GNU 实测如此。
             if self.op != "=":
                 return mode
-            source = mode & self.copy_from
-            return (mode & ~self.who) | (source & self.who)
+            # 取源类那一组「局部三位」，再填进目标类（类与类之间要错位）。
+            local = (mode >> _CLASS_SHIFT[self.copy_from]) & 0o7
+            result = mode
+            for name, bits in _CLASS_BITS.items():
+                if self.who & bits:
+                    result &= ~bits
+                    result |= (local & 0o7) << _CLASS_SHIFT[name]
+            return result
 
         rwx, special = self._masks(mode, is_dir)
         if self.op == "+":
@@ -134,12 +143,14 @@ class _Clause:
                 if is_dir or (mode & 0o111):
                     rwx |= 0o111
             elif ch == "s":
-                if self.who & 0o600:
+                if self.who & _CLASS_BITS["u"]:
                     special |= 0o4000
-                if self.who & 0o060:
+                if self.who & _CLASS_BITS["g"]:
                     special |= 0o2000
             elif ch == "t":
-                special |= 0o1000
+                # sticky 位只对 other 类有效：GNU 的 u+t 什么也不改（实测）。
+                if self.who & _CLASS_BITS["o"]:
+                    special |= 0o1000
         return rwx, special
 
 
@@ -266,10 +277,10 @@ class _State:
         target = spec.target(current, is_dir)
         self.last_mode = current
 
-        if target == current:
+        if _same_mode(current, target, is_dir):
             if self.verbose:
                 self.ctx.stdout.write(
-                    f"mode of '{label}' retained as {mode_octal(current)} ({perm_bits(current)})\n"
+                    f"mode of '{label}' retained as {mode_octal(target)} ({perm_bits(target)})\n"
                 )
         elif self.verbose or self.changes:
             self.ctx.stdout.write(
@@ -327,36 +338,66 @@ def _parse_mode(text: str) -> _ModeSpec:
 
 
 def _parse_clauses(text: str) -> list[_Clause]:
-    clauses = []
+    clauses: list[_Clause] = []
     for raw in text.split(","):
-        clause = _parse_clause(raw)
-        if clause is None:
+        parsed = _parse_clause(raw)
+        if parsed is None:
             raise UsageError(f"非法模式: '{text}'")
-        clauses.append(clause)
+        clauses.extend(parsed)
     return clauses
 
 
-def _parse_clause(raw: str) -> _Clause | None:
-    """解析一条子句；不合法返回 None。"""
+def _parse_clause(raw: str) -> list[_Clause] | None:
+    """解析一条子句；不合法返回 None。
+
+    GNU 允许权限串里再出现运算符：`a+rw-x` 是「加 rw，再减 x」，
+    逗号分隔的子句与这种串内运算符都会拆成多条子句，
+    后一条沿用前一条的 who（GNU 实测如此）。
+    """
     index = 0
     who = 0
     while index < len(raw) and raw[index] in "ugoa":
         ch = raw[index]
         # a 代表三类全都要（u|g|o），不是只管 other。
-        who |= 0o666 if ch == "a" else _CLASS_MASK[ch]
+        who |= _ALL_CLASSES if ch == "a" else _CLASS_BITS[ch]
         index += 1
     if index >= len(raw):
         return None
-    op = raw[index]
-    if op not in "+-=":
-        return None
-    index += 1
-    perms = raw[index:]
     if not who:
-        who = 0o666
+        who = _ALL_CLASSES
+
+    clauses: list[_Clause] = []
+    op = ""
+    perms = ""
+    while index < len(raw):
+        ch = raw[index]
+        if ch in "+-=":
+            if op:
+                clause = _make_clause(who, op, perms)
+                if clause is None:
+                    return None
+                clauses.append(clause)
+            op = ch
+            perms = ""
+        else:
+            if not op:
+                return None
+            perms += ch
+        index += 1
+    if not op:
+        return None
+    clause = _make_clause(who, op, perms)
+    if clause is None:
+        return None
+    clauses.append(clause)
+    return clauses
+
+
+def _make_clause(who: int, op: str, perms: str) -> _Clause | None:
+    """把「who + 运算符 + 权限串」拼成一条子句。"""
     if len(perms) == 1 and perms in "ugo":
         # 复制写法：u+g / g=u，GNU 只在 '=' 时才生效。
-        return _Clause(who, op, "", _CLASS_MASK[perms])
+        return _Clause(who, op, "", perms)
     if any(ch not in _PERM_CHARS for ch in perms):
         return None
     # 空的权限串是合法的（"o=" 清空 other、"u+" 什么都不加），GNU 实测如此。
@@ -364,6 +405,23 @@ def _parse_clause(raw: str) -> _Clause | None:
 
 
 # ---------- 落盘 ----------
+
+
+def _same_mode(old: int, new: int, is_dir: bool) -> bool:
+    """GNU 判定「模式没变」的规则（本机实测归纳，138 组用例逐条吻合）。
+
+    - 目标模式带 setuid / setgid / sticky 任一位时：
+      文件只看「写位的有无」有没有变（这些位在 Windows 上存不下来）；
+      目录一律算没变（MSYS 的 stat 对目录恒报 0755，写位看不出来）。
+    - 其余情况：写位的有无变了就算变了，否则比低 9 位（rwx）。
+    """
+    if new & 0o7000:
+        if is_dir:
+            return True
+        return bool(old & 0o222) == bool(new & 0o222)
+    if bool(old & 0o222) != bool(new & 0o222):
+        return False
+    return (old & 0o777) == (new & 0o777)
 
 
 def _write_mode(path: Path, target: int) -> None:
