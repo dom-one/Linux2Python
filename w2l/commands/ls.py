@@ -12,7 +12,9 @@ Windows 环境下与 GNU 的必然差异（README 有完整说明）：
 
 - -l 不输出链接数、属主、属组三列：Windows 没有 POSIX 的属主/属组语义
 - 不输出 "total N" 汇总行：Windows 的 stat 没有 st_blocks，拿不到 GNU 的块数口径
-- 权限位取自 Windows 合成出来的 st_mode，不等价于 POSIX 权限
+- 权限位按 MSYS 的口径折算（可写文件 0644、只读文件 0444、目录 0755、
+  可执行文件 0755），与 GNU 的 ls -l 一致；Windows 合成出来的 st_mode 是
+  0666/0777/0444，直接用会把组位与执行位显示错
 - 空目录返回退出码 1（GNU 返回 0），遵循本项目「无结果返回 1」的约定
 """
 
@@ -27,6 +29,7 @@ from typing import NamedTuple
 
 from ..context import RunContext
 from ..entry import command_prog
+from ..perms import canonical_mode, format_perms
 from ..registry import command
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -252,35 +255,13 @@ def _type_marker(entry: _Entry) -> str:
         return "|"
     if stat.S_ISSOCK(mode):
         return "="
-    if mode & 0o111:
+    if canonical_mode(mode) & 0o111:
         return "*"
     return ""
 
 
 def _format_perms(entry: _Entry) -> str:
-    mode = entry.mode
-    if stat.S_ISLNK(mode):
-        kind = "l"
-    elif stat.S_ISDIR(mode):
-        kind = "d"
-    elif stat.S_ISFIFO(mode):
-        kind = "p"
-    elif stat.S_ISSOCK(mode):
-        kind = "s"
-    else:
-        kind = "-"
-    return kind + _perm_bits(mode)
-
-
-def _perm_bits(mode: int) -> str:
-    """把权限位拆成 rwx rwx rwx 三组，逐位判断读、写、执行。"""
-    rwx = ""
-    for shift in (6, 3, 0):
-        bits = (mode >> shift) & 0o7
-        rwx += "r" if bits & 0o4 else "-"
-        rwx += "w" if bits & 0o2 else "-"
-        rwx += "x" if bits & 0o1 else "-"
-    return rwx
+    return format_perms(entry.mode)
 
 
 def _format_size(size: int, human: bool) -> str:

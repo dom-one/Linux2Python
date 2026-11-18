@@ -6,7 +6,7 @@
 python main.py <指令> [参数]
 ```
 
-当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）、`cp`（GNU cp 风格子集）、`mv`（GNU mv 风格子集）、`rm`（GNU rm 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
+当前实现：`grep`（GNU grep 风格子集）、`ls`（GNU ls 风格子集）、`cat`（GNU cat 风格子集）、`head`（GNU head 风格子集）、`tail`（GNU tail 风格子集）、`wc`（GNU wc 风格子集）、`find`（GNU find 风格子集）、`tree`（GNU tree 风格子集）、`du`（GNU du 风格子集）、`sed`（GNU sed 风格子集）、`awk-lite`（GNU awk 字段投影子集）、`cp`（GNU cp 风格子集）、`mv`（GNU mv 风格子集）、`rm`（GNU rm 风格子集）、`chmod`（GNU chmod 风格子集）。后续指令按同一模式接入，主干代码不需要改动。
 
 纯标准库实现，零第三方依赖，`git clone` 后直接可跑。
 
@@ -68,6 +68,10 @@ python main.py rm w2l/registry.py.bak  # 删除文件
 python main.py rm -r build/       # 递归删除目录
 python main.py rm -v -f logs/*.tmp        # 忽略不存在的文件并显示过程
 python main.py rm -d empty_dir    # 删除空目录
+python main.py chmod 644 README.md  # 改成 0644
+python main.py chmod +x bin/dmlinux.cmd  # 符号模式加执行位
+python main.py chmod -R u+w,go-w data/   # 递归改权限
+python main.py chmod -v --reference=template.txt a.txt  # 参照另一个文件的模式
 ```
 
 ## 全局命令 `dmlinux`
@@ -172,7 +176,7 @@ dmlinux grep -rn "TODO" E:\1\NULL\Windows-to-Linux
 Windows 环境下的差异（都是平台本身没有对应概念，不是实现取巧）：
 
 - **长格式只有四列**：没有链接数、属主、属组。Windows 没有 POSIX 的属主/属组语义，硬凑只会填一列假数字。
-- **权限位来自 Windows 合成值**：普通文件显示 `-rw-rw-rw-`、只读文件 `-r--r--r--`、目录 `drwxrwxrwx`，是 Python `os.stat` 在 Windows 上合出来的，不等价于 POSIX 权限。
+- **权限位按 MSYS 的口径折算**：可写文件 `-rw-r--r--`、只读文件 `-r--r--r--`、目录 `drwxr-xr-x`、可执行文件 `-rwxr-xr-x`，与 GNU 的 `ls -l` 一致。（Windows 的 `os.stat` 合出来的是 0666/0777/0444，直接用会把组位与执行位显示错；折算逻辑在 `w2l/perms.py`。）
 - **没有 `total N` 汇总行**：Windows 的 `stat` 没有 `st_blocks`，拿不到 GNU 的块数口径。
 - **空目录返回退出码 1**（GNU 返回 0），遵循本项目统一的「无结果返回 1」约定，脚本里可直接用它判断目录是否为空。
 
@@ -712,6 +716,41 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），「删除符号链接本身」这条分支未实测。
 - **不支持 `--one-file-system` / `--preserve-root` / `--no-preserve-root`**：跨盘与根目录保护在本项目里按「一律不删根目录」处理。
 
+## chmod 能力清单
+
+| 选项 | 含义 | 示例命令 |
+| --- | --- | --- |
+| （无） | 改权限；第一个操作数是模式，后面跟文件 | `python main.py chmod 644 README.md` |
+| `-c` / `--changes` | 只报告真的改了的文件 | `python main.py chmod -c 644 README.md` |
+| `-f` / `--silent` / `--quiet` | 不输出错误信息（退出码照样是 2） | `python main.py chmod -f 644 missing.txt` |
+| `-v` / `--verbose` | 每个处理过的文件都报一行 | `python main.py chmod -v 644 README.md` |
+| `-R` / `--recursive` | 递归处理目录及其内容 | `python main.py chmod -R 644 data/` |
+| `--reference=参照文件` | 用参照文件当前的模式当目标模式 | `python main.py chmod --reference=template.txt new.txt` |
+| `--preserve-root` | 拒绝操作根目录（本实现的默认行为） | `python main.py chmod --preserve-root -R 755 E:\` |
+| `--no-preserve-root` | 允许操作根目录（GNU 的默认行为） | `python main.py chmod --no-preserve-root -R 755 E:\` |
+
+行为细节对齐 GNU coreutils 8.32 的 chmod（65 组用例，64 组与 GNU 逐字节一致，差分脚本 `AI/脚本/_t711_diff_chmod.py`）：
+
+- **模式有两种写法**：以数字开头按八进制（`644`、`0644`、`4755`），否则按符号模式（`u+w`、`go-w`、`a=rwx`、`u+rw,go-w`）。逗号分隔的是**子句**，不是多个模式（`chmod 644,755 f` 在 GNU 上是「非法模式」）。
+- **符号模式在当前模式上算**：当前模式按 MSYS 的口径取（可写文件 0644、只读文件 0444、目录 0755），所以 `chmod g+w` 得到的是 0664。
+- **复制写法（`u+g`、`g=u`）只在 `=` 时生效**，`+` / `-` 配复制写法是空操作（GNU 实测如此）。
+- **`X` 只在「是目录」或「本来就有执行位」时才给执行位**：`chmod a+X` 对普通文件没动静，对目录则是 0755。
+- **空的权限串是合法的**：`o=` 清空 other、`u=` 清空 owner、`a=` 全清、`u+` 什么都不加。
+- **`-v` 打印 `mode of 'X' changed from 0644 (rw-r--r--) to 0444 (r--r--r--)`**；模式没变时打印 `mode of 'X' retained as 0644 (rw-r--r--)`。`-c` 只在真变了的时候打印。
+- **`-v` 遇到打不开的文件**会在标准输出上打一行 `failed to change mode of 'X' from ... to ...`，同时在标准错误上报错。
+- **打不开的文件报的原模式**沿用上一个处理过的文件的模式（GNU 的口径）；一个文件都没处理过时 GNU 报的是未初始化的随机值，本实现固定用 0644。
+- **`--reference` 之后的所有操作数都是文件**，不给模式（GNU 同此：`chmod --reference=f 644 g` 会把 `644` 当文件名）。
+
+Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
+
+- **能落盘的权限位只有「只读属性」**：Windows 没有 POSIX 权限位，MSYS 上的 GNU chmod 也只存这一位（实测 `chmod 755` 之后 GNU 的 `stat` 报的是 644）。本实现按同一套判据：目标模式里**一个写位都没有**就设只读，有写位就清掉只读。所以 `chmod 600` 与 `chmod 644` 落盘后状态一样，`chmod +x` 也不会真的给文件加执行位——组位、其他位、执行位、setuid 这些只参与报数，不落盘。
+- **报数用的是 GNU 的口径**：可写文件 0644、只读文件 0444、目录 0755，与 `ls -l` 的权限列（`w2l/perms.py` 统一折算）自洽，也和 GNU 的输出对得上。
+- **退出码**：出错一律返回 2（GNU 返回 1），沿用本项目「用法或运行错误返回 2」的约定；成功返回 0。
+- **提示语是中文**（GNU 是英文），与本项目的 `cp` / `mv` / `rm` 保持一致；`-v` 的输出沿用 GNU 的英文原文。
+- **根目录默认拒绝操作**（比 GNU 的默认保守）：GNU 的默认是 `--no-preserve-root`（照做），本项目默认按「一律不碰根目录」处理，要改盘符根得显式加 `--no-preserve-root`。
+- **目录遍历顺序是排序后的**（GNU 用 readdir 顺序，本来就不确定），所以 `-v` 的打印顺序与 GNU 可能不同，落地内容完全一致。
+- **符号链接没做验证**：Windows 上创建符号链接要管理员权限（本机报 WinError 1314），「改符号链接本身」这条分支未实测。
+
 ## 目录结构
 
 ```
@@ -726,6 +765,7 @@ Windows-to-Linux/
 │   ├── context.py           # 运行上下文（cwd / stdout / stderr / stdin）
 │   ├── errors.py            # UsageError / CommandError
 │   ├── entry.py             # 入口名（python main.py / dmlinux）跟随调用方式
+│   ├── perms.py             # 权限口径：Windows 合成权限位 → POSIX 常见口径（MSYS 同款）
 │   └── commands/
 │       ├── __init__.py      # 自动导入子模块完成注册
 │       ├── grep.py          # grep 实现
@@ -741,7 +781,8 @@ Windows-to-Linux/
 │       ├── awk_lite.py      # awk-lite 实现
 │       ├── cp.py            # cp 实现
 │       ├── mv.py            # mv 实现
-│       └── rm.py            # rm 实现
+│       ├── rm.py            # rm 实现
+│       └── chmod.py         # chmod 实现
 ├── tests/
 │   ├── conftest.py
 │   ├── test_grep.py
@@ -758,6 +799,7 @@ Windows-to-Linux/
 │   ├── test_cp.py
 │   ├── test_mv.py
 │   ├── test_rm.py
+│   ├── test_chmod.py
 │   └── test_launcher.py     # 启动器端到端测试
 ├── pyproject.toml
 └── .github/workflows/ci.yml
@@ -820,7 +862,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
 **阶段二：常用命令族**
 
-`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`（已完成）、`rm`（已完成）、`chmod`。先做「Windows 用户最常抱怨缺失」的那一批。
+`ls`（已完成）、`cat`（已完成）、`head`（已完成）、`tail`（已完成）、`wc`（已完成）、`find`（已完成）、`tree`（已完成）、`du`（已完成）、`sed`（已完成）、`awk-lite`（已完成，字段投影）、`cp`（已完成）、`mv`（已完成）、`rm`（已完成）、`chmod`（已完成）。先做「Windows 用户最常抱怨缺失」的那一批。
 
 **阶段三：工程化**
 

@@ -31,6 +31,7 @@ from typing import NamedTuple
 from ..context import RunContext
 from ..entry import command_prog
 from ..errors import UsageError
+from ..perms import canonical_mode, format_perms
 from ..registry import command
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -291,24 +292,7 @@ def _format_meta(st: os.stat_result, args: argparse.Namespace) -> str:
 
 def _format_perms(st: os.stat_result) -> str:
     """权限列：类型字符加 rwx rwx rwx，与 ls -l 同一套口径。"""
-    mode = st.st_mode
-    if stat.S_ISLNK(mode):
-        kind = "l"
-    elif stat.S_ISDIR(mode):
-        kind = "d"
-    elif stat.S_ISFIFO(mode):
-        kind = "p"
-    elif stat.S_ISSOCK(mode):
-        kind = "s"
-    else:
-        kind = "-"
-    rwx = ""
-    for shift in (6, 3, 0):
-        bits = (mode >> shift) & 0o7
-        rwx += "r" if bits & 0o4 else "-"
-        rwx += "w" if bits & 0o2 else "-"
-        rwx += "x" if bits & 0o1 else "-"
-    return kind + rwx
+    return format_perms(st.st_mode)
 
 
 def _format_size(st: os.stat_result, human: bool) -> str:
@@ -353,7 +337,7 @@ def _type_marker(entry: _Entry) -> str:
         return "|"
     if stat.S_ISSOCK(mode):
         return "="
-    if mode & 0o111:
+    if canonical_mode(mode) & 0o111:
         return "*"
     return ""
 
