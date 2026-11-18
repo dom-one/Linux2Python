@@ -178,6 +178,8 @@ def main() -> int:
         ("符号-u加s", ["u+s", "a.txt"], (), False),
         ("符号-g加s", ["g+s", "a.txt"], (), False),
         ("符号-加t", ["+t", "a.txt"], (), False),
+        ("符号-o加t", ["o+t", "a.txt"], (), False),
+        ("符号-g加t", ["g+t", "a.txt"], (), False),
         ("符号-a加s", ["a+s", "a.txt"], (), False),
         ("符号-g等于u", ["g=u", "a.txt"], (), False),
         ("符号-u等于g", ["u=g", "a.txt"], (), False),
@@ -213,10 +215,37 @@ def main() -> int:
         ("递归-444", ["-R", "444", "sub"], (), True),
         ("递归-verbose", ["-v", "-R", "700", "sub"], (), True),
         ("递归-单文件", ["-R", "644", "a.txt"], (), False),
+        ("目录-verbose-4000", ["-v", "4000", "sub"], (), False),
+        ("目录-verbose-4755", ["-v", "4755", "sub"], (), False),
+        ("目录-verbose-444", ["-v", "444", "sub"], (), False),
+        ("只读文件-verbose-4755", ["-v", "4755", "a.txt"], ("a.txt",), False),
+        ("只读文件-verbose-4000", ["-v", "4000", "a.txt"], ("a.txt",), False),
+        ("只读文件-verbose-4444", ["-v", "4444", "a.txt"], ("a.txt",), False),
         ("多个操作数", ["644", "a.txt", "b.txt"], (), False),
+        ("符号-o加s", ["o+s", "a.txt"], (), False),
+        ("符号-a加t", ["a+t", "a.txt"], (), False),
+        ("符号-u加t", ["u+t", "a.txt"], (), False),
+        ("符号-g加x", ["g+x", "a.txt"], (), False),
+        ("符号-先减后加组合", ["u-w,g+w", "a.txt"], (), False),
+        ("符号-a加rw减x", ["a+rw-x", "a.txt"], (), False),
+        ("符号-a加x减r", ["a+x-r", "a.txt"], (), False),
+        ("符号-a减rw加x", ["a-rw+x", "a.txt"], (), False),
+        ("符号-组加rwx减rwx", ["go+rwx-rwx", "a.txt"], (), False),
+        ("符号-串内两次运算符", ["a+rw+x", "a.txt"], (), False),
+        ("符号-串内运算符加X", ["a+rwX-x", "a.txt"], (), False),
+        ("符号-串内运算符加等号", ["a=rw-x", "a.txt"], (), False),
+        ("符号-单类串内运算符", ["u+rw-x", "a.txt"], (), False),
+        ("符号-多层子句", ["u=rw,go=r", "a.txt"], (), False),
+        ("符号-目录上的X", ["a+X", "sub"], (), False),
+        ("符号-目录上的加x", ["a+x", "sub"], (), False),
+        ("符号-只读文件加s", ["u+s", "a.txt"], ("a.txt",), False),
     ]
 
     for label, args, readonly, recursive in cases:
+        # 符号模式一律带 -v：只有看报出来的模式才能发现算错的地方
+        # （只比落地的只读状态的话，x 位算错也看不出来）。
+        if label.startswith("符号-") and "-v" not in args:
+            args = ["-v", *args]
         scenario(label, args, readonly, recursive)
 
     say(f"=== 共 {len(cases)} 组，不一致 {mismatches} 组 ===")
