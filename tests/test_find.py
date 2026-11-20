@@ -1,21 +1,26 @@
 """find 指令的测试。
 
 覆盖三块：正常路径、选项组合、错误路径。
-语义基线来自 Git Bash 的 GNU find 4.10.0 实测（差分对照脚本在 AI/脚本/ 下）。
+语义基线来自 Git Bash 的 GNU find 4.10.0 实测（差分对照脚本在 AI/脚本/_t825_diff_find_gnu.py）。
 
 两个容易踩的约定：
 
-- 语料用 write_bytes 写，不��� write_text：Windows 上文本模式会把 \\n 翻成 \\r\\n，
+- 语料用 write_bytes 写，不用 write_text：Windows 上文本模式会把 \\n 翻成 \\r\\n，
   字节数会多 1，-size 的断言就会对不上。
 - 打印出来的路径用正斜杠（跟 GNU 一致），比较时要先把期望值也换成正斜杠。
 """
 
 import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from conftest import run_find
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def p(path):
@@ -44,6 +49,25 @@ def lines(text):
 
 def names(text):
     return {line.rsplit("/", 1)[-1] for line in lines(text)}
+
+
+@pytest.fixture
+def recorder(tmp_path):
+    """一个记录 argv 的助手：-exec 跑它，把收到的参数写进文件。
+
+    用来验 -exec 的 {} 展开。不用 echo/printf 是因为它们在 Windows 与 MSYS 下
+    行为不同（argv 里的反斜杠与花括号会被 MSYS 运行时改写），测出来的差异
+    是运行时的差异，不是 find 展开逻辑的差异。
+    """
+    helper = tmp_path / "record.py"
+    helper.write_text(
+        "import sys\n"
+        "with open(sys.argv[1], 'a', encoding='utf-8') as f:\n"
+        "    f.write('\\t'.join(sys.argv[2:]) + '\\n')\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "exec.log"
+    return helper, log
 
 
 # --------------------------------------------------------------------------
@@ -274,6 +298,214 @@ def test_find_depth_prints_children_before_parents(tree):
     found = lines(out)
     assert found[-1] == p(tree)
     assert p(tree / "sub") in found
+
+
+# --------------------------------------------------------------------------
+# 求值语义：普通布尔短路（实测 GNU findutils 4.10）
+# --------------------------------------------------------------------------
+
+
+def test_find_or_short_circuits_when_left_is_true(tree):
+    # -print 恒为真，所以 -o 的右半边不再算：每条路径只打印一遍
+    code, out, err = run_find([str(tree), "-print", "-o", "-print"], cwd=tree)
+    assert code == 0
+    found = lines(out)
+    assert len(found) == len(set(found))
+    assert p(tree / "a.txt") in found
+
+
+def test_find_and_evaluates_right_even_when_left_is_true(tree):
+    # -a 的左半边为真时右半边照样算：每条路径打印两遍
+    code, out, err = run_find([str(tree), "-print", "-a", "-print"], cwd=tree)
+    assert code == 0
+    found = lines(out)
+    assert len(found) == len(set(found)) * 2
+
+
+def test_find_or_runs_right_only_when_left_is_false(tree):
+    # 左半边为假（不匹配 *.txt）时才走右半边：右半边的动作只对不匹配的执行
+    code, out, err = run_find(
+        [str(tree), "-name", "*.txt", "-o", "-printf", "R:%f\n"], cwd=tree
+    )
+    assert code == 0
+    # 命中的 *.txt 不出现在右半边的输出里
+    assert "R:a.txt" not in out
+    assert "R:B.txt" not in out
+    assert "R:notes.md" in out
+
+
+def test_find_and_skips_right_when_left_is_false(tree):
+    # 左半边为假时右半边不算：右半边的动作只对匹配的 *.txt 执行
+    code, out, err = run_find(
+        [str(tree), "-name", "*.txt", "-a", "-printf", "R:%f\n"], cwd=tree
+    )
+    assert code == 0
+    assert "R:a.txt" in out
+    assert "R:notes.md" not in out
+
+
+def test_find_and_binds_tighter_than_or(tree):
+    # -a 优先级高于 -o：等价于 (-name *.md) -o ((-name *.txt) -a (-name a*))
+    code, out, err = run_find(
+        [str(tree), "-name", "*.md", "-o", "-name", "*.txt", "-a", "-name", "a*"], cwd=tree
+    )
+    assert code == 0
+    found = names(out)
+    assert "notes.md" in found
+    assert "a.txt" in found
+    assert "B.txt" not in found
+
+
+# --------------------------------------------------------------------------
+# -exec 的 {} 展开
+# --------------------------------------------------------------------------
+
+
+def _exec_log(log):
+    """读 -exec 助手记下的每次调用的参数（每次一行，参数用 \t 分隔）。"""
+    if not log.exists():
+        return []
+    return [line.split("\t") for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def test_find_exec_expands_placeholder_in_place(tree, recorder):
+    helper, log = recorder
+    code, out, err = run_find(
+        [str(tree), "-name", "a.txt", "-exec", sys.executable, str(helper), str(log), "A{}B", ";"],
+        cwd=tree,
+    )
+    assert code == 0
+    records = _exec_log(log)
+    assert len(records) == 1
+    assert records[0][0] == "A" + p(tree / "a.txt") + "B"
+
+
+def test_find_exec_expands_every_placeholder_in_one_argument(tree, recorder):
+    helper, log = recorder
+    code, out, err = run_find(
+        [str(tree), "-name", "a.txt", "-exec", sys.executable, str(helper), str(log), "{}A{}", ";"],
+        cwd=tree,
+    )
+    assert code == 0
+    records = _exec_log(log)
+    assert len(records) == 1
+    assert records[0][0] == p(tree / "a.txt") + "A" + p(tree / "a.txt")
+
+
+def test_find_exec_expands_placeholder_in_each_argument(tree, recorder):
+    helper, log = recorder
+    code, out, err = run_find(
+        [
+            str(tree), "-name", "a.txt",
+            "-exec", sys.executable, str(helper), str(log), "X", "{}", "Y", "{}", ";",
+        ],
+        cwd=tree,
+    )
+    assert code == 0
+    records = _exec_log(log)
+    assert len(records) == 1
+    assert records[0] == ["X", p(tree / "a.txt"), "Y", p(tree / "a.txt")]
+
+
+def test_find_exec_plus_expands_placeholder_to_all_paths(tree, recorder):
+    helper, log = recorder
+    code, out, err = run_find(
+        [
+            str(tree), "-name", "*.txt",
+            "-exec", sys.executable, str(helper), str(log), "{}", "+",
+        ],
+        cwd=tree,
+    )
+    assert code == 0
+    records = _exec_log(log)
+    # 「+」形式只跑一次，整批路径作为多个参数传过去
+    assert len(records) == 1
+    assert set(records[0]) == {p(tree / "a.txt"), p(tree / "B.txt"), p(tree / "sub" / "deep.txt")}
+
+
+def test_find_exec_plus_rejects_embedded_placeholder(tree, recorder):
+    # GNU 对 '+' 形式要求 {} 单独成一个参数，否则报错（实测 findutils 4.10）
+    helper, log = recorder
+    from w2l.errors import UsageError
+
+    with pytest.raises(UsageError) as info:
+        run_find(
+            [str(tree), "-exec", sys.executable, str(helper), str(log), "A{}B", "+"], cwd=tree
+        )
+    assert "'{}'" in str(info.value)
+
+
+def test_find_exec_plus_rejects_two_placeholders(tree, recorder):
+    helper, log = recorder
+    from w2l.errors import UsageError
+
+    with pytest.raises(UsageError) as info:
+        run_find(
+            [
+                str(tree),
+                "-exec", sys.executable, str(helper), str(log), "{}", "X", "{}", "+",
+            ],
+            cwd=tree,
+        )
+    assert "占位符" in str(info.value)
+
+
+def test_find_exec_plus_rejects_placeholder_not_last(tree, recorder):
+    helper, log = recorder
+    from w2l.errors import UsageError
+
+    with pytest.raises(UsageError) as info:
+        run_find(
+            [
+                str(tree),
+                "-exec", sys.executable, str(helper), str(log), "{}", "X", "+",
+            ],
+            cwd=tree,
+        )
+    assert "最后一个参数" in str(info.value)
+
+
+# --------------------------------------------------------------------------
+# 路径口径
+# --------------------------------------------------------------------------
+
+
+def test_find_printf_basename_follows_the_displayed_path(tree):
+    # GNU 的 %f 按「打印出来的路径」取 basename：操作数写 . 时根条目就是 .
+    code, out, err = run_find([".", "-maxdepth", "0", "-printf", "%f|%y\n"], cwd=tree)
+    assert code == 0
+    assert out == ".|d\n"
+
+
+def test_find_name_matches_the_displayed_basename(tree):
+    # 同上：`-name '.'` 命中根条目，`-name '真实目录名'` 不命中
+    code, out, err = run_find([".", "-maxdepth", "0", "-name", ".", "-print"], cwd=tree)
+    assert code == 0
+    assert lines(out) == ["."]
+
+    code, out, err = run_find([".", "-maxdepth", "0", "-name", tree.name, "-print"], cwd=tree)
+    assert code == 1
+    assert out == ""
+
+
+# --------------------------------------------------------------------------
+# 管道输出的换行
+# --------------------------------------------------------------------------
+
+
+def test_find_pipe_output_uses_lf_not_crlf(tree):
+    """管道里必须是纯 LF：多出来的 \\r 会让 grep -x 和 $(...) 比较对不上。"""
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "main.py"), "find", ".", "-name", "*.txt"],
+        cwd=tree,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode == 0
+    assert b"\r" not in proc.stdout
+    # 顺序按 NTFS 的 readdir 顺序，不写死；只查每一行都以 LF 结尾
+    assert sorted(proc.stdout.splitlines()) == [b"./B.txt", b"./a.txt", b"./sub/deep.txt"]
+    assert proc.stdout.count(b"\n") == 3
 
 
 # --------------------------------------------------------------------------

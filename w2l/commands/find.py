@@ -4,11 +4,14 @@
 
 - 表达式语法：谓词用 -a/-and、-o/-or、!/-not 组合，括号分组，-a 优先级高于 -o
 - 隐式 -print：表达式里除了 -prune 之外没有动作时，自动在整条表达式后面接一个 -print
+- 求值是普通的布尔短路：动作恒为真，-a 的左半边为假就跳过右半边、-o 的左半边为真就跳过右半边
 - 遍历顺序：按目录项的原始顺序（与 GNU 的 readdir 顺序一致），先序；-depth 改成后序
 - 路径打印：操作数原样打印，子项用 / 连接；-print0 用 NUL 分隔
 - -size 默认按 512 字节块向上取整，带 c/w/k/M/G 后缀时按对应单位向上取整
 - -prune 命中后不再进入该目录；-maxdepth/-mindepth 控制深度
-- -exec 支持 ";"（每个文件跑一次）与 "+"（攒一批跑一次）
+- -exec 支持 ";"（每个文件跑一次）与 "+"（攒一批跑一次）；";" 形式把 {} 就地替换成路径，
+  "+" 形式要求 {} 单独作为最后一个参数（GNU 的规则）
+- 管道与重定向时输出用 LF 结尾（与 GNU 一致），控制台保持 CRLF
 
 Windows 环境下的必然差异（README 有完整说明）：
 
@@ -61,7 +64,23 @@ class _Item(NamedTuple):
 
     @property
     def basename(self) -> str:
-        return self.fs_path.name or self.display
+        """文件名：按 GNU 的口径从**打印出来的路径**上取。
+
+        GNU 的 %f 与 -name 都按显示路径取 basename，不是按真实路径：
+        操作数写 `.` 时根条目的文件名就是 `.`（不是真实目录名），
+        写 `..` 时是 `..`，写绝对路径时才是目录名（实测 GNU findutils 4.10：
+        `find . -maxdepth 0 -printf '%f\\n'` 输出 `.`，
+        `find . -maxdepth 0 -name '.'` 命中，而 `-name '真实目录名'` 不命中）。
+
+        取法与 POSIX basename 一致：去掉尾部多余的斜杠，再取最后一段；
+        没有斜杠时整串就是文件名（`.`、`..` 属于这一类）。
+        """
+        text = self.display
+        if len(text) > 1 and text.endswith("/"):
+            text = text.rstrip("/") or "/"
+        if "/" in text:
+            return text.rsplit("/", 1)[1] or "/"
+        return text
 
     @property
     def dirname(self) -> str:
@@ -91,7 +110,9 @@ class _Test(_Node):
 class _Action(_Node):
     """动作类谓词：执行副作用，恒返回真。
 
-    动作节点带 is_action 标记，GNU 的短路规则靠它决定还要不要算右半边。
+    动作恒为真这条性质是求值模型的基础：`-print -a -print` 两个动作都会执行，
+    `-print -o -print` 只执行左边那个。is_action 只用来区分「动作」与「测试」，
+    求值本身不再依赖它（实测 GNU findutils 4.10 就是普通布尔短路）。
     """
 
     is_action = True
@@ -105,7 +126,10 @@ class _Action(_Node):
 
 
 class _And(_Node):
-    """与：左侧为假就短路；左侧是动作则不再算右侧（GNU 的规则）。"""
+    """与：左侧为假就短路（不算右侧）；左侧为真就继续算右侧。
+
+    GNU 的动作恒为真，所以 `-print -a -print` 两个动作都会执行、路径被打印两遍。
+    """
 
     def __init__(self, left: _Node, right: _Node) -> None:
         self.left = left
@@ -114,20 +138,21 @@ class _And(_Node):
     def evaluate(self, item: _Item, state: "_State") -> bool:
         if not self.left.evaluate(item, state):
             return False
-        if self.left.is_action:
-            return True
         return self.right.evaluate(item, state)
 
 
 class _Or(_Node):
-    """或：左侧为真且左侧不是动作时短路；否则算右侧。"""
+    """或：左侧为真就短路（不算右侧）；左侧为假就继续算右侧。
+
+    GNU 的动作恒为真，所以 `-print -o -print` 只执行左边那个、路径只被打印一遍。
+    """
 
     def __init__(self, left: _Node, right: _Node) -> None:
         self.left = left
         self.right = right
 
     def evaluate(self, item: _Item, state: "_State") -> bool:
-        if self.left.evaluate(item, state) and not self.left.is_action:
+        if self.left.evaluate(item, state):
             return True
         return self.right.evaluate(item, state)
 
@@ -166,7 +191,9 @@ class _State:
         """把 -exec CMD {} + 攒下的一批路径一次性执行掉。"""
         if self.pending_cmd is None or not self.pending:
             return
-        args = _expand_placeholder(self.pending_cmd, self.pending, self.pending_uses_placeholder)
+        args = _expand_placeholder(
+            self.pending_cmd, self.pending, self.pending_uses_placeholder, "+"
+        )
         self.pending = []
         self.pending_cmd = None
         _run_command(args, self)
@@ -229,6 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 @command("find", "在目录树中按条件查找文件（GNU find 风格子集）", build_parser)
 def find(args: argparse.Namespace, ctx: RunContext) -> int:
+    _prepare_stdout(ctx)
     options, paths, tokens = _split_args(list(args.raw_args))
     expression = _parse_expression(tokens)
     state = _State(ctx, time.time())
@@ -698,6 +726,37 @@ def _printf_directive(directive: str, item: _Item) -> str:
     return "%" + directive
 
 
+def _prepare_stdout(ctx: RunContext) -> None:
+    """调整输出流，让管道里的换行与 GNU 一致。
+
+    Windows 上 Python 默认把 "\\n" 写成 "\\r\\n"，而 GNU find 的输出是纯 LF。
+    多出来的 \\r 会让 `grep -x` 和 `$(...)` 的比较对不上，所以管道与重定向时
+    关掉换行翻译；控制台保持默认的 CRLF，避免老控制台只认 CRLF 换行。
+
+    与 cat/head/tail 的差别：那三个指令转交的是文件原始字节，surrogateescape
+    是为了还原解不出的字节；find 打印的是自己生成的路径，不涉及原始字节，
+    所以这里只改换行。
+    """
+    reconfigure = getattr(ctx.stdout, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        if not _isatty(ctx.stdout):
+            reconfigure(newline="")
+    except (ValueError, OSError):
+        pass
+
+
+def _isatty(stream: object) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except (ValueError, OSError):
+        return False
+
+
 def _make_exec_action(parser: _ExprParser) -> _Node:
     """解析 -exec CMD ... ; 或 -exec CMD ... +。"""
     command_args: list[str] = []
@@ -718,9 +777,27 @@ def _make_exec_action(parser: _ExprParser) -> _Node:
 
     uses_placeholder = any("{}" in arg for arg in command_args)
 
+    if terminator == "+":
+        # GNU 的 "+" 形式对占位符有硬性要求（实测 findutils 4.10）：
+        # 必须恰好一处、必须单独成一个参数、必须是最后一个。
+        # 不满足时 GNU 直接报错，这里同样当用法错误处理。
+        holders = [index for index, arg in enumerate(command_args) if "{}" in arg]
+        if len(holders) > 1:
+            raise UsageError("选项 '-exec' 以 '+' 结尾时只支持一个 '{}' 占位符")
+        if holders:
+            index = holders[0]
+            if command_args[index] != "{}":
+                raise UsageError(
+                    "选项 '-exec' 以 '+' 结尾时 '{}' 必须单独作为一个参数"
+                )
+            if index != len(command_args) - 1:
+                raise UsageError(
+                    "选项 '-exec' 以 '+' 结尾时 '{}' 必须是最后一个参数"
+                )
+
     if terminator == ";":
         def action(item: _Item, state: _State) -> bool:
-            args = _expand_placeholder(command_args, [item.display], uses_placeholder)
+            args = _expand_placeholder(command_args, [item.display], uses_placeholder, ";")
             _run_command(args, state)
             return True
     else:
@@ -734,16 +811,36 @@ def _make_exec_action(parser: _ExprParser) -> _Node:
     return _Action(action, name="exec")
 
 
-def _expand_placeholder(command_args: list[str], paths: list[str], uses_placeholder: bool) -> list[str]:
-    if uses_placeholder:
-        expanded: list[str] = []
-        for arg in command_args:
-            if "{}" in arg:
-                expanded.extend(path for path in paths)
-            else:
-                expanded.append(arg)
-        return expanded
-    return list(command_args) + list(paths)
+def _expand_placeholder(
+    command_args: list[str],
+    paths: list[str],
+    uses_placeholder: bool,
+    terminator: str,
+) -> list[str]:
+    """把命令里的 {} 展开成路径。
+
+    GNU 的规则（实测 findutils 4.10）：
+
+    - ";" 形式：{} 是**就地替换**的，一个参数里有多处 {} 就都替换掉。
+      `A{}B` 得到 `A<路径>B`，`{}A{}` 得到 `<路径>A<路径>`，
+      两个参数各带一个 {} 就各换成同一个路径。
+    - "+" 形式：{} 单独作为最后一个参数，展开成整批路径（每个路径一个参数）。
+    - 命令里一处 {} 都没有时，GNU 不追加路径；本项目沿用「追加到末尾」的约定。
+    """
+    if not uses_placeholder:
+        return list(command_args) + list(paths)
+
+    expanded: list[str] = []
+    for arg in command_args:
+        if "{}" not in arg:
+            expanded.append(arg)
+        elif terminator == ";":
+            # ";" 形式一次只跑一个文件，路径只有一个
+            expanded.append(arg.replace("{}", paths[0]))
+        else:
+            # "+" 形式：{} 单独成参数，整批路径逐个摊开
+            expanded.extend(paths)
+    return expanded
 
 
 def _run_command(args: list[str], state: _State) -> None:
