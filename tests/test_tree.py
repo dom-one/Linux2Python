@@ -10,11 +10,16 @@
 - 末尾统计行前有一个空行，数目为 1 时用单数（1 directory / 1 file）
 - 根目录里一个条目都没有时，它本身不计入目录数
 - -t 按修改时间排序是旧的在前（与 ls -t 相反）
+- -x 只管「要不要往下走」：跨设备的目录照样打印、照样计入目录数
+  （上游 list.c 的 tot.dirs++ 排在 xdev 判断之前）
+- 链接默认不展开，-l 才跟随；跟随时目标已访问过就报 "recursive, not followed"
 """
 
 import os
 import re
+import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +31,36 @@ BRANCH = "├── "
 LAST = "└── "
 PIPE = "│\u00a0\u00a0 "
 BLANK = "    "
+
+# 仓库根目录（跨卷用例拿它当「另一个卷上的小目录」）
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _make_junction(link: Path, target: Path) -> bool:
+    """用 mklink /J 建目录联接；建不起来返回 False（调用方负责跳过）。
+
+    联接不需要管理员权限，是 Windows 上唯一能免权限造的「目录链接」。
+    """
+    proc = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.returncode == 0
+
+
+def _other_volume_dir(local: Path) -> Path | None:
+    """找一个跟 local 不在同一个卷上的小目录；找不到返回 None。
+
+    Windows 上只有卷（盘符）不同才算跨设备，st_dev 就是卷标识。
+    """
+    candidate = REPO_ROOT / "tests"
+    if not candidate.is_dir():
+        return None
+    if os.stat(candidate).st_dev == os.stat(local).st_dev:
+        return None
+    return candidate
 
 
 @pytest.fixture
@@ -39,6 +74,18 @@ def tree(tmp_path):
     sub.mkdir()
     (sub / "deep.txt").write_bytes(b"deep\n")
     (sub / "code.py").write_bytes(b"print(1)\n")
+    return tmp_path
+
+
+@pytest.fixture
+def junction_tree(tmp_path):
+    """一棵带目录联接的小树：a.txt、sub 目录、指向 sub 的联接 link_to_sub。"""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "inside.txt").write_bytes(b"inside\n")
+    (tmp_path / "a.txt").write_bytes(b"a\n")
+    if not _make_junction(tmp_path / "link_to_sub", sub):
+        pytest.skip("本机建不了目录联接（mklink /J 失败）")
     return tmp_path
 
 
@@ -365,3 +412,170 @@ def test_tree_non_numeric_level_is_rejected(tree):
     """-L 的参数不是数字时由 argparse 拦下。"""
     with pytest.raises(SystemExit):
         run_tree(["-L", "abc", "."], cwd=tree)
+
+
+# --------------------------------------------------------------------------
+# 三处缺陷的回归用例
+#
+# 2026-11-22 开发 tick：教程 teach/25 交接回来的三处确凿源码 bug。
+# 1. -x 在 Windows 上把整棵树都过滤掉了（DirEntry.stat() 的 st_dev 恒为 0）
+# 2. -P 命中目录时少展开一层（child_active 算晚了一级）
+# 3. 目录联接不被认成符号链接（无条件展开 + 自引用递归到路径长度上限）
+# --------------------------------------------------------------------------
+
+
+def test_tree_one_file_system_keeps_same_volume_entries(tree):
+    """-x：同一卷上的条目照常列出来。
+
+    修之前拿 DirEntry.stat() 的 st_dev（Windows 上恒为 0）去比，
+    每个条目都被过滤掉，整棵树是空的。
+    """
+    code, out, err = run_tree(["-x", "."], cwd=tree)
+    assert code == 0
+    assert err == ""
+    assert BRANCH + "a.txt\n" in out
+    assert LAST + "sub\n" in out
+    assert BLANK + LAST + "deep.txt\n" in out
+    assert out.endswith("\n2 directories, 5 files\n")
+
+
+def test_tree_one_file_system_keeps_cross_volume_dir_but_does_not_descend(tmp_path):
+    """-x：跨卷的目录照样打印，但不往下展开（上游 list.c 的 xdev 判断）。
+
+    上游的 tot.dirs++ 排在 xdev 判断之前，所以跨卷目录不会被整个丢掉，
+    只是不再往下走；目录名后面还要带上目标。
+    """
+    target = _other_volume_dir(tmp_path)
+    if target is None:
+        pytest.skip("本机只有一个卷，测不了跨卷的 -x")
+    (tmp_path / "local.txt").write_bytes(b"local\n")
+    if not _make_junction(tmp_path / "xlink", target):
+        pytest.skip("本机建不了目录联接（mklink /J 失败）")
+
+    code, out, err = run_tree(["-l", "-x", "."], cwd=tmp_path)
+    assert code == 0
+    assert "xlink -> " in out  # 跨卷目录照样打印
+    assert "test_tree.py" not in out  # 但没有往下展开
+
+    code, out, err = run_tree(["-l", "."], cwd=tmp_path)
+    assert code == 0
+    assert "test_tree.py" in out  # 不加 -x 就跟着进去
+
+
+def test_tree_pattern_lists_children_of_matching_dir(tmp_path):
+    """-P 命中目录时，它下面的内容全部列出来。
+
+    修之前 child_active 算晚了，命中目录的直接子文件被父层的模式筛掉了。
+    """
+    hit = tmp_path / "hit"
+    hit.mkdir()
+    (hit / "direct.txt").write_bytes(b"direct\n")
+    mid = hit / "mid"
+    mid.mkdir()
+    (mid / "leaf.txt").write_bytes(b"leaf\n")
+    (mid / "leaf2.txt").write_bytes(b"leaf2\n")
+    (tmp_path / "other.txt").write_bytes(b"other\n")
+
+    code, out, err = run_tree(["-P", "hit", "."], cwd=tmp_path)
+    assert code == 0
+    assert err == ""
+    assert out == (
+        ".\n"
+        + LAST + "hit\n"
+        + BLANK + BRANCH + "direct.txt\n"
+        + BLANK + LAST + "mid\n"
+        + BLANK + BLANK + BRANCH + "leaf.txt\n"
+        + BLANK + BLANK + LAST + "leaf2.txt\n"
+        + "\n3 directories, 3 files\n"
+    )
+
+
+def test_tree_pattern_matching_dir_is_not_empty(tmp_path):
+    """-P 命中的目录不是空目录：它下面的文件要列出来。
+
+    修之前 -P 'mid' 会把 mid 变成一个空目录（0 files）。
+    """
+    hit = tmp_path / "hit"
+    hit.mkdir()
+    (hit / "direct.txt").write_bytes(b"direct\n")
+    mid = hit / "mid"
+    mid.mkdir()
+    (mid / "leaf.txt").write_bytes(b"leaf\n")
+    (mid / "leaf2.txt").write_bytes(b"leaf2\n")
+
+    code, out, err = run_tree(["-P", "mid", "."], cwd=tmp_path)
+    assert code == 0
+    assert err == ""
+    assert out == (
+        ".\n"
+        + LAST + "hit\n"
+        + BLANK + LAST + "mid\n"
+        + BLANK + BLANK + BRANCH + "leaf.txt\n"
+        + BLANK + BLANK + LAST + "leaf2.txt\n"
+        + "\n3 directories, 2 files\n"
+    )
+
+
+def test_tree_junction_is_not_expanded_by_default(junction_tree):
+    """目录联接当成链接：默认不展开（上游 list.c 的 !lnk || (lnk && lflag)）。
+
+    修之前联接被当普通目录无条件展开，同样的内容会列两遍。
+    """
+    code, out, err = run_tree(["."], cwd=junction_tree)
+    assert code == 0
+    assert err == ""
+    assert "link_to_sub -> " in out
+    assert out.count("inside.txt") == 1
+
+
+def test_tree_junction_shows_target(junction_tree):
+    """联接的名字后面带目标路径，跟符号链接一个格式。"""
+    code, out, err = run_tree(["."], cwd=junction_tree)
+    assert code == 0
+    target = os.path.join(str(junction_tree / "sub"))
+    assert "link_to_sub -> " + target in out
+
+
+def test_tree_junction_followed_with_l(junction_tree):
+    """-l 才跟随联接：这时内容会列两遍（真目录一份、联接一份）。"""
+    code, out, err = run_tree(["-l", "."], cwd=junction_tree)
+    assert code == 0
+    assert out.count("inside.txt") == 2
+
+
+def test_tree_junction_counts_as_directory(junction_tree):
+    """联接指向目录，按目录计数（上游 isdir 取跟随后目标的属性）。"""
+    code, out, err = run_tree(["."], cwd=junction_tree)
+    assert code == 0
+    assert out.endswith("\n3 directories, 2 files\n")
+
+
+def test_tree_junction_classify_marks_target_type(junction_tree):
+    """-F：联接的目标是目录，标记跟在上游一样追加在目标后面。"""
+    code, out, err = run_tree(["-F", "."], cwd=junction_tree)
+    assert code == 0
+    assert "link_to_sub -> " in out
+    line = [row for row in out.splitlines() if "link_to_sub" in row][0]
+    assert line.endswith("/")
+
+
+def test_tree_self_referencing_junction_does_not_recurse(junction_tree):
+    """自引用联接不会一路递归下去。
+
+    修之前会一路递归到 Windows 的路径长度上限（实测 64 层）才停。
+    """
+    if not _make_junction(junction_tree / "loop", junction_tree):
+        pytest.skip("本机建不了目录联接（mklink /J 失败）")
+    code, out, err = run_tree(["."], cwd=junction_tree)
+    assert code == 0
+    assert "loop -> " in out
+    assert out.count("inside.txt") == 1
+
+
+def test_tree_self_referencing_junction_with_l_reports_recursive(junction_tree):
+    """-l 跟随时撞上自己，停在那一层并报 recursive, not followed（上游同名提示）。"""
+    if not _make_junction(junction_tree / "loop", junction_tree):
+        pytest.skip("本机建不了目录联接（mklink /J 失败）")
+    code, out, err = run_tree(["-l", "."], cwd=junction_tree)
+    assert code == 0
+    assert "[recursive, not followed]" in out

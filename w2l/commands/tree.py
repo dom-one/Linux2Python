@@ -9,13 +9,19 @@
 - 末尾统计行：先空一行，再打 "N directories, M files"（数目为 1 时用单数）
 - -L N 限制根目录往下最多 N 层；-I/-P 用通配符筛选
 - -F 给名字追加类型标记，-s/-h 打大小，-p 打权限，-D 打修改时间
+- -x 只在「不往下走」这一层生效：跨设备的目录照样打印、照样计入目录数
+  （上游 list.c 的 tot.dirs++ 排在 xdev 判断之前）
+- 链接默认不展开（上游 list.c 的 !(*dir)->lnk || ((*dir)->lnk && lflag)），
+  -l 才跟随；跟随时目标已经访问过就停在那一层，报 "recursive, not followed"
 
 Windows 环境下的必然差异（README 有完整说明）：
 
 - 画线字符默认用 UTF-8（GNU 在 C 区域设置下默认用 ASCII）
 - 目录的大小按 0 算（Windows 的目录 st_size 不稳定，GNU 侧恒为 0）
 - 没有属主/属组列（Windows 没有 POSIX 的属主语义）
-- 符号链接在 Windows 上要管理员权限才能创建，相关行为没法完整验证
+- 符号链接在 Windows 上要管理员权限才能创建，相关行为没法完整验证；
+  但目录联接（junction）不需要权限，Python 的 lstat 认不出它是链接，
+  所以这里按 st_reparse_tag 判定，把联接当链接处理（与 MSYS 的 ls 一致）
 """
 
 from __future__ import annotations
@@ -66,7 +72,12 @@ _CHARSET_ALIASES = {
 
 
 class _Entry(NamedTuple):
-    """一条待输出的目录项，只带排版需要的字段。"""
+    """一条待输出的目录项，只带排版需要的字段。
+
+    dev/ino 跟上游 tree 的 ent->dev/ent->inode 一个口径：链接取「跟随后」
+    目标的那个身份，普通条目取 lstat 的（上游 getinfo() 就是这么分的）。
+    mode/size/mtime 一律取 lstat 的值，跟上游 ent->mode/ent->size/ent->mtime 对齐。
+    """
 
     name: str
     path: Path
@@ -75,6 +86,9 @@ class _Entry(NamedTuple):
     mode: int
     size: int
     mtime: float
+    dev: int
+    ino: int
+    link_target: str | None
 
 
 class _State:
@@ -86,6 +100,8 @@ class _State:
         self.files = 0
         self.had_error = False
         self.root_dev: int | None = None
+        # 已经走过的目录（dev, ino），用来发现跟随链接时的递归
+        self.visited: set[tuple[int, int]] = set()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -146,23 +162,26 @@ def tree(args: argparse.Namespace, ctx: RunContext) -> int:
     for operand in operands:
         target = _resolve(ctx.cwd, operand)
         try:
-            st = target.lstat()
+            lst = target.lstat()
         except OSError as exc:
             ctx.stderr.write(f"tree: 无法访问 '{operand}': {exc.strerror or exc}\n")
             state.had_error = True
             continue
-        if stat.S_ISLNK(st.st_mode):
+        if _is_link(lst):
             # 指向目录的链接（含 Windows 的目录联接）当目录用，与 GNU 一致
             try:
                 st = target.stat()
             except OSError:
-                pass
+                st = lst
+        else:
+            st = lst
         if not stat.S_ISDIR(st.st_mode):
             ctx.stderr.write(f"tree: '{operand}' 不是目录\n")
             state.had_error = True
             continue
-        state.root_dev = st.st_dev
-        _emit_tree(target, operand, args, state, charset)
+        # -x 的基准是根目录自己所在的卷（上游用的是 lstat 的 st_dev）
+        state.root_dev = lst.st_dev
+        _emit_tree(target, operand, lst, args, state, charset)
 
     if not args.noreport:
         ctx.stdout.write("\n" + _format_report(state, args))
@@ -174,10 +193,21 @@ def tree(args: argparse.Namespace, ctx: RunContext) -> int:
 # --------------------------------------------------------------------------
 
 
-def _emit_tree(root: Path, label: str, args: argparse.Namespace, state: _State, charset: str) -> None:
+def _emit_tree(
+    root: Path,
+    label: str,
+    root_stat: os.stat_result,
+    args: argparse.Namespace,
+    state: _State,
+    charset: str,
+) -> None:
     """打印一棵目录树：先打根目录那一行，再逐层往下画。"""
-    st = root.lstat()
-    state.ctx.stdout.write(_format_meta(st, args) + label + "\n")
+    state.ctx.stdout.write(
+        _format_meta(root_stat.st_mode, root_stat.st_size, root_stat.st_mtime, args) + label + "\n"
+    )
+
+    # 根目录自己先记进已访问集合：跟随链接时靠它挡住指向根的环
+    state.visited.add((root_stat.st_dev, root_stat.st_ino))
 
     # GNU：根目录本身命中 -P 时，它下面的内容全部列出
     pattern_active = not _matches_patterns(args.pattern, _basename(label), label, True, args)
@@ -204,24 +234,28 @@ def _list_dir(
     for index, entry in enumerate(entries):
         is_last = index == len(entries) - 1
         child_path = f"{display_path}/{entry.name}"
-        state.ctx.stdout.write(_build_prefix(ancestors, is_last, args, charset))
-        state.ctx.stdout.write(_format_entry(entry, child_path, args) + "\n")
+        prefix = _build_prefix(ancestors, is_last, args, charset)
 
         if not entry.is_dir:
             state.files += 1
+            state.ctx.stdout.write(prefix + _format_entry(entry, child_path, args) + "\n")
             continue
 
         state.dirs += 1
-        if not _can_descend(entry, level, args):
+        descend, note = _plan_descend(entry, level, args, state)
+        state.ctx.stdout.write(prefix + _format_entry(entry, child_path, args) + note + "\n")
+        if not descend:
             continue
 
-        children = _read_entries(entry.path, args, child_path, pattern_active, state)
-        if not children:
-            continue
-        # 进入的目录本身命中 -P 时，它下面的内容全部列出（GNU 的做法）
+        # 进入的目录本身命中 -P 时，它下面的内容全部列出（GNU 的做法）。
+        # 顺序很关键：先算出 child_active，再用它去读 children，
+        # 反过来的话命中目录的直接子文件会被父层的模式筛掉。
         child_active = pattern_active and not _matches_patterns(
             args.pattern, entry.name, child_path, True, args
         )
+        children = _read_entries(entry.path, args, child_path, child_active, state)
+        if not children:
+            continue
         _list_dir(
             entry.path,
             children,
@@ -235,13 +269,30 @@ def _list_dir(
         )
 
 
-def _can_descend(entry: _Entry, level: int, args: argparse.Namespace) -> bool:
-    """这个目录要不要往下走。"""
+def _plan_descend(entry: _Entry, level: int, args: argparse.Namespace, state: _State) -> tuple[bool, str]:
+    """这个目录要不要往下走，以及这一行末尾要补什么提示。
+
+    返回的提示是上游的 "recursive, not followed"：跟随链接时目标已经访问过，
+    就停在这一层不再往下走（上游 list.c 的同名报错）。
+    """
+    # 上游先把目录的身份记进已访问集合，再判断要不要展开
+    key = (entry.dev, entry.ino)
+    found = key in state.visited
+    if not found:
+        state.visited.add(key)
+
     if args.level is not None and level >= args.level:
-        return False
+        return False, ""
+    # -x：跨设备的目录照样打印、照样计入目录数，只是不往下展开
+    # （上游 list.c 的 tot.dirs++ 在 xdev 判断之前）
+    if args.one_file_system and state.root_dev is not None and entry.dev != state.root_dev:
+        return False, ""
+    # 链接默认不展开（上游：!(*dir)->lnk || ((*dir)->lnk && lflag)）
     if entry.is_link and not args.follow_links:
-        return False
-    return True
+        return False, ""
+    if entry.is_link and found:
+        return False, "  [recursive, not followed]"
+    return True, ""
 
 
 def _build_prefix(ancestors: list[bool], is_last: bool, args: argparse.Namespace, charset: str) -> str:
@@ -261,44 +312,44 @@ def _build_prefix(ancestors: list[bool], is_last: bool, args: argparse.Namespace
 
 
 def _format_entry(entry: _Entry, child_path: str, args: argparse.Namespace) -> str:
-    """拼出单条目的显示文本：元信息 + 名字（符号链接带上目标）+ 类型标记。
+    """拼出单条目的显示文本：元信息 + 名字（链接带上目标）+ 类型标记。
 
     -f 打开时名字换成完整路径，路径是「根目录的操作数 + / + 逐级名字」，
     所以操作数是 "." 时条目显示成 "./子目录/文件"。
     """
-    meta = _format_meta(entry.path.lstat(), args)
+    meta = _format_meta(entry.mode, entry.size, entry.mtime, args)
     name = child_path if args.fullpath else entry.name
-    if entry.is_link:
-        target = _read_link(entry.path)
-        if target is not None:
-            name = f"{name} -> {target}"
+    if entry.is_link and entry.link_target is not None:
+        name = f"{name} -> {entry.link_target}"
     if args.classify:
         name += _type_marker(entry)
     return meta + name
 
 
-def _format_meta(st: os.stat_result, args: argparse.Namespace) -> str:
-    """按 GNU fillinfo() 的顺序拼元信息：权限、大小、时间。"""
+def _format_meta(mode: int, size: int, mtime: float, args: argparse.Namespace) -> str:
+    """按 GNU fillinfo() 的顺序拼元信息：权限、大小、时间。
+
+    取的都是 lstat 的值（上游 ent->mode/ent->size/ent->mtime 同源）。
+    """
     parts = []
     if args.permissions:
-        parts.append(" " + _format_perms(st))
+        parts.append(" " + format_perms(mode))
     # GNU 的 -h 隐含 -s（源码里写着 "Assume they also want -s"）
     if args.size or args.human_readable:
-        parts.append(_format_size(st, args.human_readable))
+        parts.append(_format_size(mode, size, args.human_readable))
     if args.date:
-        parts.append(" " + _format_time(st.st_mtime))
+        parts.append(" " + _format_time(mtime))
     return "".join(parts)
 
 
-def _format_perms(st: os.stat_result) -> str:
+def _format_perms(mode: int) -> str:
     """权限列：类型字符加 rwx rwx rwx，与 ls -l 同一套口径。"""
-    return format_perms(st.st_mode)
+    return format_perms(mode)
 
 
-def _format_size(st: os.stat_result, human: bool) -> str:
+def _format_size(mode: int, size: int, human: bool) -> str:
     """大小列：GNU 的 psize()，字节时右对齐 11 列，人-readable 时带单位。"""
-    size = st.st_size
-    if stat.S_ISDIR(st.st_mode):
+    if stat.S_ISDIR(mode):
         # Windows 的目录 st_size 会在 0 与 4096 之间跳，统一按 0 算
         size = 0
     if not human:
@@ -366,7 +417,15 @@ def _read_entries(
     pattern_active: bool,
     state: _State,
 ) -> list[_Entry]:
-    """读一个目录的内容，按 -a/-d/-x/-I/-P 过滤后排序。"""
+    """读一个目录的内容，按 -a/-d/-I/-P 过滤后排序。
+
+    -x 不在这里筛条目：上游的跨设备判断只管「要不要往下走」，跨设备的目录
+    照样打印、照样计入目录数（上游 list.c 的 tot.dirs++ 在 xdev 判断之前）。
+
+    取 st_dev / st_ino 必须用 os.stat()：Windows 上 os.scandir() 给的
+    DirEntry.stat() 是目录枚举缓存，st_dev 与 st_ino 全是 0，拿它比永远
+    不相等，整棵树会被过滤光（du.py 早就踩过这个坑）。
+    """
     try:
         scanner = os.scandir(dir_path)
     except OSError as exc:
@@ -381,20 +440,30 @@ def _read_entries(
             if not args.all and name.startswith("."):
                 continue
             try:
-                st = item.stat(follow_symlinks=False)
+                lst = os.stat(item.path, follow_symlinks=False)
             except OSError:
                 continue
-            is_link = stat.S_ISLNK(st.st_mode)
-            is_dir = stat.S_ISDIR(st.st_mode)
-            if is_link and args.follow_links:
-                # -l：指向目录的链接按目录算（GNU 用 stat 而不是 lstat 判定）
+
+            is_link = _is_link(lst)
+            is_dir = stat.S_ISDIR(lst.st_mode)
+            dev, ino = lst.st_dev, lst.st_ino
+            link_target = None
+            if is_link:
+                # 上游 getinfo()：链接走 stat() 取目标，ent->dev/ent->inode
+                # 用的是「跟随后」目标的身份；stat 失败就是悬空链接，
+                # 按不是目录处理（上游把它的 isdir 置成 FALSE）
                 try:
-                    is_dir = stat.S_ISDIR(item.stat(follow_symlinks=True).st_mode)
+                    target = os.stat(item.path)
                 except OSError:
+                    target = None
+                if target is not None:
+                    is_dir = stat.S_ISDIR(target.st_mode)
+                    dev, ino = target.st_dev, target.st_ino
+                else:
                     is_dir = False
+                link_target = _read_link(Path(item.path))
+
             if args.dirs and not is_dir:
-                continue
-            if args.one_file_system and state.root_dev is not None and st.st_dev != state.root_dev:
                 continue
             child_path = f"{display_path}/{name}"
             if _matches_patterns(args.ignore, name, child_path, is_dir, args):
@@ -412,12 +481,30 @@ def _read_entries(
                     path=Path(item.path),
                     is_dir=is_dir,
                     is_link=is_link,
-                    mode=st.st_mode,
-                    size=st.st_size,
-                    mtime=st.st_mtime,
+                    mode=lst.st_mode,
+                    size=lst.st_size,
+                    mtime=lst.st_mtime,
+                    dev=dev,
+                    ino=ino,
+                    link_target=link_target,
                 )
             )
     return _sort_entries(entries, args)
+
+
+def _is_link(st: os.stat_result) -> bool:
+    """这个目录项是不是链接。
+
+    符号链接看 S_ISLNK 就够了；但 Windows 的目录联接（junction）lstat 出来
+    是个普通目录（S_ISLNK 为假、S_ISDIR 为真），只能靠重分析点标记认出来——
+    实测 st_reparse_tag 等于 stat.IO_REPARSE_TAG_MOUNT_POINT 就是联接。
+    MSYS 的 ls -l 把联接显示成 "lrwxrwxrwx ... -> 目标"，也是当链接看的。
+    """
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    tag = getattr(st, "st_reparse_tag", None)
+    mount = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    return tag is not None and mount is not None and tag == mount
 
 
 def _sort_entries(entries: list[_Entry], args: argparse.Namespace) -> list[_Entry]:
@@ -453,10 +540,21 @@ def _basename(path: str) -> str:
 
 
 def _read_link(path: Path) -> str | None:
+    """读链接目标；读不出来（不是链接）就返回 None。
+
+    Windows 的目录联接读出来带 "\\\\?\\" 前缀（扩展长度路径），
+    那是内核层面的写法，对读者没意义，显示时去掉；
+    UNC 的 "\\?\\UNC\\server\\share" 要还原成 "\\\\server\\share"。
+    """
     try:
-        return os.readlink(path)
+        target = os.readlink(path)
     except OSError:
         return None
+    if target.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + target[len("\\\\?\\UNC\\") :]
+    if target.startswith("\\\\?\\"):
+        return target[len("\\\\?\\") :]
+    return target
 
 
 # --------------------------------------------------------------------------
