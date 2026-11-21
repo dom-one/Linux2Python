@@ -14,7 +14,11 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TICK_PATTERN = re.compile(r"tick\s*#(\d+)", re.IGNORECASE)
+# 只认「#### tick #N」这样的标题行。正文里提到别的任务的 tick 号
+# （例如教程日志里写「开发任务 tick #15 改的源码」）不能算进来，
+# 否则下一轮的 tick 号会被顶高（实测：教程日志标题是 1..11，
+# 正文提到 tick #15，脚本就把新一轮编成了 #16，应该是 #12）。
+TICK_PATTERN = re.compile(r"^####\s*tick\s*#(\d+)", re.IGNORECASE | re.MULTILINE)
 
 
 def next_tick(path):
