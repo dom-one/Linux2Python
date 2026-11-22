@@ -271,3 +271,98 @@ def test_cli_help_lists_commands(capsys):
     code = main(["--help"])
     assert code == 0
     assert "grep" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# -j / --jobs：分片并行搜索
+# --------------------------------------------------------------------------
+
+# 低于这个文件数时实现会退回串行（起进程的开销大于并行收益），
+# 所以并行路径的测试要造够文件。
+_PARALLEL_FILE_COUNT = 40
+
+
+def _make_parallel_tree(root):
+    """造一棵够大的树：普通文本、GBK、空文件、二进制、嵌套目录都有。"""
+    for d in range(4):
+        sub = root / f"dir{d}"
+        sub.mkdir(parents=True)
+        for f in range(_PARALLEL_FILE_COUNT // 4 - 1):
+            (sub / f"f{f}.txt").write_text(
+                f"head {d} {f}\nERROR here\ntail {f}\n", encoding="utf-8", newline="\n"
+            )
+        nested = sub / "deep"
+        nested.mkdir()
+        (nested / "n.txt").write_text("ERROR nested\n", encoding="utf-8", newline="\n")
+        (nested / "gbk.txt").write_bytes("ERROR 中文\n".encode("gbk"))
+        (nested / "empty.txt").write_bytes(b"")
+        (nested / "bin.dat").write_bytes(b"\x00\x01ERROR\x00\n")
+    return root
+
+
+def test_parallel_output_is_identical_to_serial(tmp_path):
+    tree = _make_parallel_tree(tmp_path / "tree")
+    serial_code, serial_out, serial_err = run_grep(["-r", "ERROR", str(tree)])
+    parallel_code, parallel_out, parallel_err = run_grep(["-j", "4", "-r", "ERROR", str(tree)])
+    assert parallel_out == serial_out
+    assert parallel_code == serial_code
+    assert parallel_err == serial_err
+    assert "ERROR here" in parallel_out
+
+
+def test_parallel_matches_serial_with_option_combinations(tmp_path):
+    tree = _make_parallel_tree(tmp_path / "tree")
+    for extra in (["-n"], ["-c"], ["-l"], ["-o"], ["-i"], ["-v"], ["-E"], ["-w"], ["-n", "-c"]):
+        _, serial_out, _ = run_grep(extra + ["-r", "ERROR", str(tree)])
+        _, parallel_out, _ = run_grep(extra + ["-j", "2", "-r", "ERROR", str(tree)])
+        assert parallel_out == serial_out, f"选项组合 {extra} 的并行输出与串行不一致"
+
+
+def test_parallel_reports_missing_file_like_serial(tmp_path):
+    tree = _make_parallel_tree(tmp_path / "tree")
+    missing = tmp_path / "nope.txt"
+    serial_code, serial_out, serial_err = run_grep(["-r", "ERROR", str(tree), str(missing)])
+    parallel_code, parallel_out, parallel_err = run_grep(
+        ["-j", "4", "-r", "ERROR", str(tree), str(missing)]
+    )
+    assert parallel_code == serial_code == 2
+    assert parallel_out == serial_out
+    assert "nope.txt" in parallel_err
+    assert "nope.txt" in serial_err
+
+
+def test_jobs_one_is_serial(tmp_path):
+    tree = _make_parallel_tree(tmp_path / "tree")
+    _, serial_out, _ = run_grep(["-r", "ERROR", str(tree)])
+    _, one_out, _ = run_grep(["-j", "1", "-r", "ERROR", str(tree)])
+    assert one_out == serial_out
+
+
+def test_jobs_zero_means_auto(tmp_path):
+    tree = _make_parallel_tree(tmp_path / "tree")
+    _, serial_out, _ = run_grep(["-r", "ERROR", str(tree)])
+    code, auto_out, _ = run_grep(["-j", "0", "-r", "ERROR", str(tree)])
+    assert code == 0
+    assert auto_out == serial_out
+
+
+def test_negative_jobs_is_usage_error(tmp_path):
+    namespace = build_parser().parse_args(["-j", "-1", "ERROR", str(tmp_path)])
+    ctx = RunContext(cwd=tmp_path, stdout=io.StringIO(), stderr=io.StringIO(), stdin=_Tty())
+    with pytest.raises(UsageError):
+        grep(namespace, ctx)
+
+
+def test_parallel_falls_back_to_serial_for_small_trees(tmp_path):
+    """文件数不够时不该起进程；输出仍要正确。"""
+    target = tmp_path / "one.txt"
+    target.write_text("ERROR one\n", encoding="utf-8", newline="\n")
+    code, out, _ = run_grep(["-j", "4", "ERROR", str(target)])
+    assert code == 0
+    assert out == "ERROR one\n"
+
+
+def test_parallel_ignores_jobs_for_stdin():
+    code, out, _ = run_grep(["-j", "4", "warn"], stdin_text="ok\nwarn here\n")
+    assert code == 0
+    assert out == "warn here\n"

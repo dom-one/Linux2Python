@@ -3,12 +3,17 @@
 默认使用基本正则（BRE），与 GNU grep 一致；-E 切换为扩展正则（ERE）。
 文件编码按文本可信度择优判定，GBK 文件在英文 Windows 上也能正确检索。
 退出码遵循 GNU 约定：0 有命中、1 无命中、2 出错。
+
+-j/--jobs 是本项目的扩展选项（GNU grep 没有，ugrep 的 --jobs 是同一思路）：
+把文件列表切成连续片段分给多个工作进程，只改速度不改结果，
+输出与串行逐字节一致。细节见 README 的「分片并行搜索」。
 """
 
 from __future__ import annotations
 
 import argparse
 import codecs
+import io
 import locale
 import os
 import re
@@ -18,11 +23,17 @@ from typing import IO, Iterable, Iterator
 from ..context import RunContext
 from ..entry import command_prog
 from ..errors import UsageError
+from ..parallel import map_ordered, resolve_jobs, split_evenly
 from ..registry import command
 
 _SNIFF_SIZE = 8192
 _FALLBACK_ENCODINGS = ("utf-8", "gb18030", "latin-1")
 _SCORE_MARGIN = 0.3
+# 文件数少于这个数时 --jobs 仍走串行：起进程的开销大于并行收益。
+_PARALLEL_MIN_FILES = 32
+# 切片数按进程数的这个倍数来定：比进程数多，工作进程才能动态领活
+# （快的进程多干几片），而 imap 仍然按输入顺序返回结果，输出顺序不受影响。
+_CHUNKS_PER_JOB = 4
 _CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF))
 _BRE_ESCAPED = {
     "(": "(?:",
@@ -62,6 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-c", "--count", action="store_true", help="只输出每个文件的匹配行数")
     parser.add_argument("-l", "--files-with-matches", action="store_true", help="只输出含有匹配的文件名")
     parser.add_argument("-o", "--only-matching", action="store_true", help="只输出匹配到的部分")
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="并行搜索的工作进程数；0 表示按 CPU 核数自动决定（默认 1，即串行）",
+    )
     return parser
 
 
@@ -93,18 +112,107 @@ def grep(args: argparse.Namespace, ctx: RunContext) -> int:
             path = Path(raw)
             if path.is_dir() and not recursive:
                 raise UsageError(f"{path}: 是一个目录，请加 -r 递归搜索")
-        for path in _iter_files(paths, recursive):
-            try:
-                selected = _search_file(path, regex, args, ctx, show_prefix)
-            except OSError as exc:
-                ctx.stderr.write(f"{path}: {exc.strerror or exc}\n")
-                had_error = True
-                continue
-            matched_any = matched_any or selected > 0
+
+        jobs = _resolve_jobs(args.jobs)
+        if jobs > 1:
+            matched_any, had_error = _search_parallel(
+                paths, recursive, regex, args, ctx, show_prefix, jobs
+            )
+        else:
+            matched_any, had_error = _search_serial(
+                paths, recursive, regex, args, ctx, show_prefix
+            )
 
     if had_error:
         return 2
     return 0 if matched_any else 1
+
+
+def _resolve_jobs(value: int) -> int:
+    """把 --jobs 的取值解析成实际进程数，非法值按用法错误处理。"""
+    if value < 0:
+        raise UsageError(f"--jobs 的进程数不能为负数: {value}")
+    return resolve_jobs(value)
+
+
+def _search_serial(
+    paths: list[str],
+    recursive: bool,
+    regex: re.Pattern,
+    args: argparse.Namespace,
+    ctx: RunContext,
+    show_prefix: bool,
+) -> tuple[bool, bool]:
+    """串行搜索：边遍历边搜边输出，不在内存里攒结果。"""
+    matched_any = False
+    had_error = False
+    for path in _iter_files(paths, recursive):
+        try:
+            selected = _search_file(path, regex, args, ctx.stdout, show_prefix)
+        except OSError as exc:
+            ctx.stderr.write(f"{path}: {exc.strerror or exc}\n")
+            had_error = True
+            continue
+        matched_any = matched_any or selected > 0
+    return matched_any, had_error
+
+
+def _search_parallel(
+    paths: list[str],
+    recursive: bool,
+    regex: re.Pattern,
+    args: argparse.Namespace,
+    ctx: RunContext,
+    show_prefix: bool,
+    jobs: int,
+) -> tuple[bool, bool]:
+    """并行搜索：把文件列表切成若干连续片段分给工作进程，按片段顺序输出。
+
+    片段是连续的，所以输出顺序与串行逐字节一致；每个片段内部仍按
+    目录遍历顺序处理，因此并行与串行的结果完全相同。
+    """
+    files = [str(path) for path in _iter_files(paths, recursive)]
+    if len(files) < _PARALLEL_MIN_FILES:
+        # 文件太少时起进程的开销大于并行收益，直接串行。
+        return _search_serial(paths, recursive, regex, args, ctx, show_prefix)
+
+    chunks = split_evenly(files, jobs * _CHUNKS_PER_JOB)
+    payloads = [(chunk, regex.pattern, regex.flags, args, show_prefix) for chunk in chunks]
+    results = map_ordered(_search_chunk, payloads, jobs)
+
+    matched_any = False
+    had_error = False
+    for text, selected, errors in results:
+        if text:
+            ctx.stdout.write(text)
+        for message in errors:
+            ctx.stderr.write(message)
+        matched_any = matched_any or selected > 0
+        had_error = had_error or bool(errors)
+    return matched_any, had_error
+
+
+def _search_chunk(
+    payload: tuple[list[str], str, int, argparse.Namespace, bool],
+) -> tuple[str, int, list[str]]:
+    """工作进程里搜索一个片段，返回 (输出文本, 命中数, 错误信息列表)。
+
+    必须放在模块顶层：spawn 的子进程要能 pickle 它。
+    """
+    chunk, pattern_source, pattern_flags, args, show_prefix = payload
+    regex = re.compile(pattern_source, pattern_flags)
+    stream = io.StringIO()
+    selected_total = 0
+    errors: list[str] = []
+    for raw in chunk:
+        path = Path(raw)
+        try:
+            selected = _search_file(path, regex, args, stream, show_prefix)
+        except OSError as exc:
+            errors.append(f"{path}: {exc.strerror or exc}\n")
+            continue
+        selected_total += selected
+    return stream.getvalue(), selected_total, errors
 
 
 def _compile_regex(args: argparse.Namespace) -> re.Pattern:
@@ -168,7 +276,7 @@ def _walk(root: Path) -> Iterator[Path]:
 
 def _search_stdin(ctx: RunContext, regex: re.Pattern, args: argparse.Namespace) -> int:
     lines = ((index, line.rstrip("\n").rstrip("\r")) for index, line in enumerate(ctx.stdin, 1))
-    selected, _ = _run_search(lines, regex, args, ctx, None, False, not _summary_mode(args))
+    selected, _ = _run_search(lines, regex, args, ctx.stdout, None, False, not _summary_mode(args))
     if args.files_with_matches:
         if selected:
             ctx.stdout.write("(standard input)\n")
@@ -177,18 +285,24 @@ def _search_stdin(ctx: RunContext, regex: re.Pattern, args: argparse.Namespace) 
     return selected
 
 
-def _search_file(path: Path, regex: re.Pattern, args: argparse.Namespace, ctx: RunContext, show_prefix: bool) -> int:
+def _search_file(
+    path: Path,
+    regex: re.Pattern,
+    args: argparse.Namespace,
+    stream: IO[str],
+    show_prefix: bool,
+) -> int:
     with path.open("rb") as handle:
         sample = handle.read(_SNIFF_SIZE)
         if b"\x00" in sample:
-            return _search_binary(path, regex, args, ctx, show_prefix)
+            return _search_binary(path, regex, args, stream, show_prefix)
         encoding = _detect_encoding(sample)
         handle.seek(0)
         selected, _ = _run_search(
             _decode_lines(handle, encoding),
             regex,
             args,
-            ctx,
+            stream,
             str(path),
             show_prefix,
             not _summary_mode(args),
@@ -196,13 +310,19 @@ def _search_file(path: Path, regex: re.Pattern, args: argparse.Namespace, ctx: R
 
     if args.files_with_matches:
         if selected:
-            ctx.stdout.write(f"{path}\n")
+            stream.write(f"{path}\n")
     elif args.count:
-        ctx.stdout.write(f"{path}:{selected}\n" if show_prefix else f"{selected}\n")
+        stream.write(f"{path}:{selected}\n" if show_prefix else f"{selected}\n")
     return selected
 
 
-def _search_binary(path: Path, regex: re.Pattern, args: argparse.Namespace, ctx: RunContext, show_prefix: bool) -> int:
+def _search_binary(
+    path: Path,
+    regex: re.Pattern,
+    args: argparse.Namespace,
+    stream: IO[str],
+    show_prefix: bool,
+) -> int:
     selected = 0
     with path.open("rb") as handle:
         for _, raw in enumerate(handle, 1):
@@ -216,11 +336,11 @@ def _search_binary(path: Path, regex: re.Pattern, args: argparse.Namespace, ctx:
     if selected == 0:
         return 0
     if args.files_with_matches:
-        ctx.stdout.write(f"{path}\n")
+        stream.write(f"{path}\n")
     elif args.count:
-        ctx.stdout.write(f"{path}:{selected}\n" if show_prefix else f"{selected}\n")
+        stream.write(f"{path}:{selected}\n" if show_prefix else f"{selected}\n")
     else:
-        ctx.stdout.write(f"Binary file {path} matches\n")
+        stream.write(f"Binary file {path} matches\n")
     return selected
 
 
@@ -228,7 +348,7 @@ def _run_search(
     lines: Iterable[tuple[int, str]],
     regex: re.Pattern,
     args: argparse.Namespace,
-    ctx: RunContext,
+    stream: IO[str],
     label: str | None,
     show_prefix: bool,
     emit_lines: bool,
@@ -248,9 +368,9 @@ def _run_search(
         if args.only_matching:
             for piece in _matched_pieces(text, regex, args.invert_match):
                 prefix = f"{lineno}:" if args.line_number else ""
-                ctx.stdout.write(f"{prefix}{piece}\n")
+                stream.write(f"{prefix}{piece}\n")
         else:
-            ctx.stdout.write(f"{_line_prefix(label, lineno, args, show_prefix)}{text}\n")
+            stream.write(f"{_line_prefix(label, lineno, args, show_prefix)}{text}\n")
     return selected, total
 
 
