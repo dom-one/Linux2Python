@@ -24,22 +24,25 @@
 from __future__ import annotations
 
 import argparse
-import codecs
-import locale
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Iterator
 
 from ..context import RunContext
+from ..encoding import (
+    SNIFF_SIZE as _SNIFF_SIZE,
+    BINARY_ENCODING as _BINARY_ENCODING,
+    candidate_encodings as _candidate_encodings,
+    decode_sample as _decode_sample,
+    detect_encoding as _detect_encoding,
+    is_text as _is_text,
+    pick_encoding as _pick_encoding,
+    text_score as _text_score,
+)
 from ..entry import command_prog
 from ..registry import command
 
-_SNIFF_SIZE = 8192
 _READ_SIZE = 65536
-_SCORE_MARGIN = 0.3
-_CJK_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF))
-_FALLBACK_ENCODINGS = ("utf-8", "gb18030", "latin-1")
-_BINARY_ENCODING = "utf-8"
 _NUMBER_WIDTH = 6
 
 
@@ -300,93 +303,3 @@ def _control_notation(byte: int) -> bytes:
     if byte < 0x20 or byte == 0x7F:
         return b"^" + bytes((byte ^ 0x40,))
     return bytes((byte,))
-
-
-def _pick_encoding(sample: bytes) -> str:
-    """按内容选解码方式。
-
-    分三类：
-
-    - 文本：先判定编码再解码，中文按 UTF-8 输出，Windows 控制台上正常显示。
-      判据是样本能被 utf-8 / 系统首选编码 / gb18030 之一严格解码。
-    - 二进制（含 NUL 字节，或谁也解不出来）：按 utf-8 + surrogateescape
-      解码，解不出的字节用代理码位占位，写回时还原成原字节，逐字节原样转交。
-
-    latin-1 永远能解任何字节，所以判定文本时不把它算进去，否则所有二进制
-    都会被误判成文本。
-    """
-    if b"\x00" in sample:
-        return _BINARY_ENCODING
-    if _is_text(sample):
-        return _detect_encoding(sample)
-    return _BINARY_ENCODING
-
-
-def _is_text(sample: bytes) -> bool:
-    """样本能否被某个真正的文本编码严格解码。"""
-    for encoding in _candidate_encodings():
-        if encoding == "latin-1":
-            continue
-        if _decode_sample(sample, encoding) is not None:
-            return True
-    return False
-
-
-def _detect_encoding(sample: bytes) -> str:
-    """按文本可信度判定编码。
-
-    判定思路与 grep.py 保持一致：系统首选编码在英文 Windows 上是 cp1252，
-    它几乎不报错，能把 GBK 字节解成乱码，所以不能按顺序取第一个能解的编码。
-    """
-    best_encoding = "utf-8"
-    best_score = -1.0
-    for encoding in _candidate_encodings():
-        text = _decode_sample(sample, encoding)
-        if text is None:
-            continue
-        score = _text_score(text)
-        if score > best_score + _SCORE_MARGIN:
-            best_score = score
-            best_encoding = encoding
-    return best_encoding
-
-
-def _candidate_encodings() -> list[str]:
-    candidates: list[str] = []
-    preferred = locale.getpreferredencoding(False)
-    for encoding in ("utf-8", preferred, *_FALLBACK_ENCODINGS):
-        if encoding and encoding not in candidates:
-            candidates.append(encoding)
-    return candidates
-
-
-def _decode_sample(sample: bytes, encoding: str) -> str | None:
-    try:
-        decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
-        return decoder.decode(sample, final=False)
-    except (UnicodeDecodeError, LookupError, ValueError):
-        return None
-
-
-def _text_score(text: str) -> float:
-    """给一段解码结果打「像不像正文」的分。
-
-    ASCII 可打印字符记 1 分，CJK 记 3 分，全角标点记 1 分，
-    高位乱码字节只记 0.2 分——这样 GBK 正文能压过 cp1252 的乱码结果。
-    """
-    if not text:
-        return 0.0
-    score = 0.0
-    for char in text:
-        code = ord(char)
-        if 32 <= code < 127:
-            score += 1.0
-        elif any(low <= code <= high for low, high in _CJK_RANGES):
-            score += 3.0
-        elif 0x3000 <= code <= 0x303F or 0xFF00 <= code <= 0xFFEF:
-            score += 1.0
-        elif code in (9, 10, 13):
-            score += 0.5
-        elif code >= 0x80:
-            score += 0.2
-    return score / len(text)
