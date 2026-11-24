@@ -647,8 +647,8 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 | `-r` / `-R` / `--recursive` | 递归复制目录（不给 `-r` 遇到目录会报错跳过） | `python main.py cp -r w2l/commands backup/` |
 | `-a` / `--archive` | 归档模式：递归 + 保留属性 + 不解引用符号链接 | `python main.py cp -a w2l/commands backup/` |
 | `-p` | 保留权限与时间戳 | `python main.py cp -p w2l/context.py w2l/context.py.bak` |
-| `--preserve=模式列表` | 只保留指定属性，可选 `mode`/`timestamps`/`ownership`/`links`/`context`/`xattr`/`all` | `python main.py cp --preserve=timestamps w2l/errors.py w2l/errors.py.bak` |
-| `--no-preserve=模式列表` | 不保留指定属性，可重复给 | `python main.py cp --no-preserve=mode w2l/errors.py w2l/errors.py.bak` |
+| `--preserve[=模式列表]` | 保留指定属性，可选 `mode`/`timestamps`/`ownership`/`links`/`context`/`xattr`/`all`；**裸写等于 `all`**（且不吃后面的操作数），可重复给（取并集） | `python main.py cp --preserve=timestamps w2l/errors.py w2l/errors.py.bak` |
+| `--no-preserve=模式列表` | 不保留指定属性，可重复给（从并集里减） | `python main.py cp --no-preserve=mode w2l/errors.py w2l/errors.py.bak` |
 | `-i` / `--interactive` | 覆盖已存在的文件前问一句 | `python main.py cp -i w2l/cli.py w2l/cli.py.bak` |
 | `-f` / `--force` | 强制覆盖（先去掉目标的只读属性） | `python main.py cp -f w2l/cli.py w2l/cli.py.bak` |
 | `-n` / `--no-clobber` | 不覆盖已存在的文件 | `python main.py cp -n w2l/cli.py w2l/cli.py.bak` |
@@ -660,7 +660,7 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 | `--parents` | 在目标下还原源的路径层级，并自己建父目录 | `python main.py cp --parents w2l/commands/grep.py backup/` |
 | `--remove-destination` | 复制前先删除目标 | `python main.py cp --remove-destination w2l/cli.py w2l/cli.py.bak` |
 
-行为细节对齐 GNU coreutils 8.32 的 cp（57 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t410_diff_cp.py`）：
+行为细节对齐 GNU coreutils 8.32 的 cp（95 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t410_diff_cp.py` 57 组 + `AI/脚本/_t1310_diff_cp_defects.py` 38 组）：
 
 - **复制按字节进行**：二进制文件原样落地，GBK 文本也不会被改写（本项目其它解码型指令会先判编码，`cp` 不判）。
 - **目标是已存在的目录时，源落成「目录/源名」**；目标不存在时，目标就是新文件本身。
@@ -670,12 +670,17 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **`-r` 目录到不存在的目标时，目标目录本身就是那份目录的副本**，不再套一层同名目录（`cp -r dir1 newdest` 得到 `newdest/内层文件`）。
 - **目标已有同名目录时是「合并」**：同名文件被覆盖，目标多出来的文件保留，目录本身不报错。
 - **`-v` 逐条打印 `'源' -> '目标'`**：目录只在**被新建**时打印那一行，合并进已有目录时不打印；被 `-n` 跳过的文件也不打印。
-- **`-n` 压过 `-i`**：两个一起给时不提问，直接跳过已存在的文件。
+- **`-i` 与 `-n` 互相清掉对方，后给的那个赢**：`-n -i` 会提问并照搬，`-i -n` 不提问也不搬；重复给时取**最后一次**出现（`-n -i -n` 是 `-n` 赢，不是第一次的 `-n` 也不是中间的 `-i`）。合并短选项同样按出现顺序算（`-ni` 是 `-i` 赢，`-in` 是 `-n` 赢）。
 - **`-u` 只在源严格更新时复制**，mtime 相等算没更新。
 - **`-i` 只在目标已存在时提问**，提示写在标准错误上；应答 `y`/`Y`/`yes` 覆盖，`n`/`N`/`no`/空行跳过。
 - **`-p` / `-a` 保住源的时间戳**，目录的时间戳在内容写完**之后**再设，否则会被子文件的写入顶掉。
 - **`-S` 先把旧目标改名加后缀**再写新的（`cp -S .bak a b` 得到 `b` 是新内容、`b.bak` 是旧内容）。
 - **`--parents` 在目标下还原源的路径层级**，`--parents a.txt 目标` 得到「目标/a.txt」；目标必须已经是目录。
+- **`--preserve` 裸写等于 `--preserve=all`，而且不吃后面的操作数**（GNU 的可选参数长选项只认等号写法）：`cp --preserve a.txt b.txt` 里 `a.txt` 是源、`b.txt` 是目标。重复给是**并集**，`--no-preserve` 再从并集里减。
+- **目标带尾斜杠时目标必须是目录**：已存在却不是目录时报「无法访问 'X/': 不是目录」；目标不存在时，文件源报「无法创建普通文件 'X/': 不是目录」，目录源（`-r`）则是**建出那个目录**并把源目录的**内容**放进去（`cp -r dir1 nosuch/` 得到 `nosuch/内层文件`，不是 `nosuch/dir1/内层文件`）。
+- **`failed to access` 排在 `target is not a directory` 前面**：多个源 + 带尾斜杠的目标，已存在却不是目录时先报前者；目标压根不存在时才报「目标不是目录」。
+- **`-T` 与 `--parents` 冲突**：`-T` 把目标当普通文件，`--parents` 要求目标是目录，一起给就报错（GNU 的说法是「使用 --parents 时目标必须是目录」）；这条排在「缺操作数」之后。
+- **`-S` 等于打开 `--backup`，与 `--no-clobber` 互斥**：`-S .bak -n` 直接报错，这条排在「缺操作数」之前。
 - **把文件复制到它自己会被拒绝**；把目录复制进它自己也会被拒绝。
 - **父目录不存在时直接报错**（`cannot create`），不像 `--parents` 那样顺手建目录。
 
@@ -703,7 +708,7 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 | `-t` / `--target-directory=目录` | 把目标目录写死，可给多个源 | `python main.py mv -t backup/ w2l/cli.py w2l/context.py` |
 | `-T` / `--no-target-directory` | 把目标当普通文件，不当目录 | `python main.py mv -T w2l/cli.py w2l/cli.py.bak` |
 
-行为细节对齐 GNU coreutils 8.32 的 mv（68 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t510_diff_mv.py`）：
+行为细节对齐 GNU coreutils 8.32 的 mv（78 组用例的落地结果与 GNU 逐条一致，差分脚本 `AI/脚本/_t510_diff_mv.py` 68 组 + `AI/脚本/_t1312_diff_mv_flag_order.py` 10 组）：
 
 - **移动按字节进行**：二进制文件原样落地，GBK 文本也不会被改写（同盘移动走 rename，文件属性与时间戳原样带过去）。
 - **目标是已存在的目录时，源落成「目录/源名」**；目标不存在时，目标就是新名字本身（目录也一样，整个目录改名）。
@@ -714,7 +719,7 @@ Windows 环境下的差异（都是本项目的取舍，不是实现取巧）：
 - **`-n` 跳过已存在的目标**：连「目录非空」那种结构性错误也不会报，直接静默跳过，退出码仍是 0。
 - **`-u` 只在源严格更新时才移动**，mtime 相等算没更新（GNU 实测如此）。
 - **`-i` 只在目标已存在时提问**，提示写在标准错误上；应答 `y`/`Y`/`yes` 照搬，`n`/`N`/`no`/空行/其它一律跳过。
-- **`-i` 与 `-n` 同时给时互相清掉对方，后给的那个赢**：`-n -i` 会提示并照搬，`-i -n` 不提示也不搬（GNU 的 `cp` 与 `mv` 都是这个行为，实测）。
+- **`-i` 与 `-n` 同时给时互相清掉对方，后给的那个赢**：`-n -i` 会提示并照搬，`-i -n` 不提示也不搬（GNU 的 `cp` 与 `mv` 都是这个行为，实测）；重复给时取**最后一次**出现（`-n -i -n` 是 `-n` 赢）。
 - **`-b` 把旧目标改名加后缀备份**（默认 `~`），**`-S` 单独给就等于隐含开备份**；备份目录时是把旧目录改名成「目录名~」。
 - **把文件移动到它自己会被拒绝**（含 `./a.txt` 这种别名、含硬链接）；把目录移动进它自己的子目录也会被拒绝。
 - **父目录不存在时直接报错**，不会顺手建目录。
@@ -875,6 +880,7 @@ Windows-to-Linux/
 - **异常到退出码的映射集中在一处**：指令层只抛 `UsageError` / `CommandError`，退出码由 `cli.py` 统一决定。
 - **上下文注入**：指令通过 `RunContext` 拿 cwd 与三个标准流，便于测试注入内存流，也方便以后加 `--json` 之类的输出通道。
 - **编码判定收在共享模块**：判定编码、解码样本、文本打分都放在 `w2l/encoding.py`，cat/head/tail/wc/sed/awk-lite/grep 共用一份（`sed` 额外保留一条「含 NUL 一律按 latin-1」的项目约定）。指令层只管「读哪一段」，不管「怎么判编码」。
+- **互斥选项的先后收在共享模块**：GNU 的互斥选项是「后给的那个赢」，而 argparse 默认不记录选项出现的先后。`w2l/flags.py` 里的 `FlagTracker`（自定义 Action）把顺序攒进 `namespace.option_order`，`resolve_exclusive` 据此裁决，`cp` 与 `mv` 共用一份（判据取**最后一次**出现）。
 
 ## 如何新增一个指令
 

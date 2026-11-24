@@ -12,20 +12,54 @@ import argparse
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from ..context import RunContext
 from ..entry import command_prog
 from ..errors import UsageError
+from ..flags import FlagTracker, resolve_exclusive
 from ..registry import command
 
 _PRESERVE_MODES = ("mode", "timestamps", "ownership", "links", "context", "xattr", "all")
 _CHUNK = 1024 * 1024
 
 
+class _CpParser(argparse.ArgumentParser):
+    """cp 的命令行有一处要改写后才交给 argparse。
+
+    GNU 的 --preserve 是 getopt 的「可选参数」长选项：值必须用等号附在后面
+    （--preserve=mode），裸写 --preserve 等于 --preserve=all，而且
+    **不吃后面的操作数**（GNU 实测：`cp --preserve a.txt b.txt` 里 a.txt
+    是源、b.txt 是目标）。argparse 的 nargs="?" 会把后面的操作数当成值
+    吃掉，所以在解析前把裸写的 --preserve 改写成 --preserve=all。
+    """
+
+    def parse_known_args(self, args=None, namespace=None):  # type: ignore[override]
+        argv = list(sys.argv[1:] if args is None else args)
+        return super().parse_known_args(_rewrite_preserve(argv), namespace)
+
+
+def _rewrite_preserve(argv: list[str]) -> list[str]:
+    """把裸写的 --preserve 改成 --preserve=all（GNU 的可选参数只认等号写法）。
+
+    遇到裸的 -- 就停下：GNU 的 getopt 到 -- 为止不再解析选项，
+    之后的 --preserve 是文件名而不是选项。
+    """
+    out: list[str] = []
+    for item in argv:
+        if item == "--":
+            out.append(item)
+            out.extend(argv[len(out):])
+            return out
+        out.append("--preserve=all" if item == "--preserve" else item)
+    return out
+
+
 def build_parser() -> argparse.ArgumentParser:
     prog = command_prog("cp")
-    parser = argparse.ArgumentParser(
+    parser = _CpParser(
         prog=prog,
         description="复制文件或目录",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -44,11 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-p", action="store_true", help="保留权限与时间戳")
     parser.add_argument(
         "--preserve",
-        nargs="?",
-        const="all",
+        action="append",
         default=None,
         metavar="MODE_LIST",
-        help="保留指定属性，可选 mode/timestamps/ownership/links/context/xattr/all",
+        help="保留指定属性，可选 mode/timestamps/ownership/links/context/xattr/all；裸写等于 all",
     )
     parser.add_argument(
         "--no-preserve",
@@ -57,9 +90,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODE_LIST",
         help="不保留指定属性，可重复给",
     )
-    parser.add_argument("-i", "--interactive", action="store_true", help="覆盖已存在的文件前询问")
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action=FlagTracker,
+        dest="interactive",
+        default=False,
+        help="覆盖已存在的文件前询问",
+    )
     parser.add_argument("-f", "--force", action="store_true", help="强制覆盖（先去掉目标的只读属性）")
-    parser.add_argument("-n", "--no-clobber", action="store_true", help="不覆盖已存在的文件")
+    parser.add_argument(
+        "-n",
+        "--no-clobber",
+        action=FlagTracker,
+        dest="no_clobber",
+        default=False,
+        help="不覆盖已存在的文件",
+    )
     parser.add_argument("-u", "--update", action="store_true", help="仅当源比目标新时才复制")
     parser.add_argument("-v", "--verbose", action="store_true", help="显示每个被复制的条目")
     parser.add_argument("-t", "--target-directory", default=None, metavar="DIR", help="把目标目录写死")
@@ -81,9 +128,8 @@ def cp(args: argparse.Namespace, ctx: RunContext) -> int:
     if plan is None:
         return 2
 
-    sources, dest, dest_label, dest_is_dir = plan
-    for source in sources:
-        state.copy_source(source, dest, dest_label, dest_is_dir)
+    for source in plan.sources:
+        state.copy_source(source, plan)
     return 2 if state.had_error else 0
 
 
@@ -102,23 +148,28 @@ class _State:
         self.suffix = args.suffix
         self.parents = args.parents
         self.remove_destination = args.remove_destination
-        self.no_clobber = args.no_clobber
         self.update = args.update
         self.force = args.force
-        # GNU 里 -n 压过 -i：给了 -n 就不问了。
-        self.interactive = args.interactive and not args.no_clobber
+        # GNU 里 -i 与 -n 互相清掉对方，后给的那个赢（共享判据见 w2l/flags.py）。
+        policy = resolve_exclusive(
+            getattr(args, "option_order", None) or [],
+            {"interactive": bool(args.interactive), "no_clobber": bool(args.no_clobber)},
+        )
+        self.interactive = policy["interactive"]
+        self.no_clobber = policy["no_clobber"]
         self.preserve = self._resolve_preserve()
 
     # ---------- 选项归并 ----------
 
     def _resolve_preserve(self) -> set[str]:
+        """--preserve 给多次时是并集（GNU 实测），--no-preserve 从并集里减。"""
         modes: set[str] = set()
         if self.args.p:
             modes |= {"mode", "timestamps"}
         if self.archive:
             modes |= {"mode", "timestamps", "links"}
-        if self.args.preserve is not None:
-            modes |= self._parse_modes(self.args.preserve, "--preserve")
+        for item in self.args.preserve or []:
+            modes |= self._parse_modes(item, "--preserve")
         for item in self.args.no_preserve or []:
             modes -= self._parse_modes(item, "--no-preserve")
         return modes
@@ -141,8 +192,13 @@ class _State:
 
     # ---------- 操作数规划 ----------
 
-    def plan(self) -> tuple[list[str], Path, str, bool] | None:
+    def plan(self) -> "_Plan | None":
         """拆出源列表与目标。返回 None 表示规划阶段已经报错。"""
+        # 选项之间的冲突先查：GNU 在动任何文件之前就报（缺操作数都不算数）。
+        if self.suffix is not None and self.no_clobber:
+            self.error("选项 --backup 与 --no-clobber 不能同时使用")
+            return None
+
         operands = list(self.args.operands)
         target_dir = self.args.target_directory
 
@@ -156,9 +212,20 @@ class _State:
                 else:
                     self.error(f"缺少目标文件操作数: '{operands[0]}'")
                 return None
+            if self.parents:
+                # -T 把目标当普通文件，与 --parents「目标必须是目录」天生冲突。
+                self.error("使用 --parents 时目标必须是目录，不能与 -T 同时使用")
+                return None
             sources = operands[:-1]
             dest_text = operands[-1]
-            return sources, _resolve(self.ctx.cwd, dest_text), _trim(dest_text), False
+            return _Plan(
+                sources=sources,
+                dest=_resolve(self.ctx.cwd, dest_text),
+                dest_label=_trim(dest_text),
+                dest_raw=dest_text,
+                dest_is_dir=False,
+                dest_trailing_sep=_ends_with_sep(dest_text),
+            )
 
         if target_dir is not None:
             if not operands:
@@ -171,7 +238,14 @@ class _State:
             if not dest.is_dir():
                 self.error(f"目标 '{target_dir}' 不是目录")
                 return None
-            return list(operands), dest, _trim(target_dir), True
+            return _Plan(
+                sources=list(operands),
+                dest=dest,
+                dest_label=_trim(target_dir),
+                dest_raw=target_dir,
+                dest_is_dir=True,
+                dest_trailing_sep=_ends_with_sep(target_dir),
+            )
 
         if not operands:
             self.error("缺少文件操作数")
@@ -183,23 +257,46 @@ class _State:
         sources = operands[:-1]
         dest_text = operands[-1]
         dest = _resolve(self.ctx.cwd, dest_text)
+        trailing_sep = _ends_with_sep(dest_text)
 
         if self.parents:
             if not dest.is_dir():
                 self.error(f"使用 --parents 时目标必须是目录: '{dest_text}'")
                 return None
-            return sources, dest, _trim(dest_text), True
+            return _Plan(
+                sources=sources,
+                dest=dest,
+                dest_label=_trim(dest_text),
+                dest_raw=dest_text,
+                dest_is_dir=True,
+                dest_trailing_sep=trailing_sep,
+            )
+
+        # 目标带尾分隔符 ⇒ 目标必须是一个目录；已存在却不是目录时报错
+        # （GNU：failed to access 'X/': Not a directory）。
+        # 这条要先于「多个源时目标必须是目录」判：GNU 遇到 plain.txt/ 时
+        # 报的是 failed to access，不是 target is not a directory。
+        if trailing_sep and dest.exists() and not dest.is_dir():
+            self.error(f"无法访问 '{dest_text}': 不是目录")
+            return None
 
         # 多个源时目标必须是已存在的目录，这条先于逐个源的存在性检查。
         if len(sources) > 1 and not dest.is_dir():
             self.error(f"目标 '{dest_text}' 不是目录")
             return None
 
-        return sources, dest, _trim(dest_text), dest.is_dir()
+        return _Plan(
+            sources=sources,
+            dest=dest,
+            dest_label=_trim(dest_text),
+            dest_raw=dest_text,
+            dest_is_dir=dest.is_dir(),
+            dest_trailing_sep=trailing_sep,
+        )
 
     # ---------- 单个源 ----------
 
-    def copy_source(self, source: str, dest: Path, dest_label: str, dest_is_dir: bool) -> None:
+    def copy_source(self, source: str, plan: "_Plan") -> None:
         src = _resolve(self.ctx.cwd, source)
         try:
             src_stat = os.stat(src)
@@ -212,7 +309,7 @@ class _State:
             self.error(f"未指定 -r，跳过目录 '{source}'")
             return
 
-        dest_path, dest_path_label = self._destination_for(source, dest, dest_label, dest_is_dir)
+        dest_path, dest_path_label = self._destination_for(source, plan)
 
         if os.path.lexists(dest_path):
             if os.path.isdir(dest_path) and not os.path.islink(dest_path):
@@ -232,27 +329,31 @@ class _State:
             return
 
         if is_dir:
-            self.copy_dir(src, dest_path, source, dest_path_label, src_stat)
+            self.copy_dir(src, dest_path, source, dest_path_label, src_stat, plan)
         else:
-            self.copy_file(src, dest_path, source, dest_path_label, src_stat)
+            self.copy_file(src, dest_path, source, dest_path_label, src_stat, plan)
 
-    def _destination_for(
-        self, source: str, dest: Path, dest_label: str, dest_is_dir: bool
-    ) -> tuple[Path, str]:
+    def _destination_for(self, source: str, plan: "_Plan") -> tuple[Path, str]:
         """算出这个源的落点路径，以及报错/verbose 里要显示的标签。"""
         if self.parents:
             relative = _parents_relative(source)
-            return dest / relative, f"{dest_label}/{relative}"
+            return plan.dest / relative, f"{plan.dest_label}/{relative}"
 
-        if dest_is_dir and not self.args.no_target_directory:
+        if plan.dest_is_dir and not self.args.no_target_directory:
             name = _basename(source)
-            return dest / name, f"{dest_label}/{name}"
-        return dest, dest_label
+            return plan.dest / name, f"{plan.dest_label}/{name}"
+        return plan.dest, plan.dest_label
 
     # ---------- 复制动作 ----------
 
     def copy_file(
-        self, src: Path, dst: Path, src_label: str, dst_label: str, src_stat: os.stat_result
+        self,
+        src: Path,
+        dst: Path,
+        src_label: str,
+        dst_label: str,
+        src_stat: os.stat_result,
+        plan: "_Plan",
     ) -> None:
         exists = os.path.lexists(dst)
 
@@ -301,6 +402,11 @@ class _State:
                 except OSError as exc:
                     self.error(f"无法创建目录 '{_trim(dst.parent)}': {exc.strerror or exc}")
                     return
+            elif plan.dest_trailing_sep and not plan.dest_is_dir and dst == plan.dest and not exists:
+                # 目标带尾分隔符时不能落地成普通文件（GNU：cannot create
+                # regular file 'X/': Not a directory）。目录源已在上面分流。
+                self.error(f"无法创建普通文件 '{plan.dest_raw}': 不是目录")
+                return
             try:
                 with open(src, "rb") as reader, open(dst, "wb") as writer:
                     shutil.copyfileobj(reader, writer, _CHUNK)
@@ -326,6 +432,7 @@ class _State:
         src_label: str,
         dst_label: str,
         src_stat: os.stat_result,
+        plan: "_Plan",
     ) -> None:
         if not os.path.exists(dst):
             try:
@@ -357,9 +464,9 @@ class _State:
                 self.error(f"无法访问 '{child_label}': {exc.strerror or exc}")
                 continue
             if stat.S_ISDIR(child_stat.st_mode):
-                self.copy_dir(child, child_dst, child_label, child_dst_label, child_stat)
+                self.copy_dir(child, child_dst, child_label, child_dst_label, child_stat, plan)
             else:
-                self.copy_file(child, child_dst, child_label, child_dst_label, child_stat)
+                self.copy_file(child, child_dst, child_label, child_dst_label, child_stat, plan)
 
         # 目录的 mtime 要在内容写完之后再设，否则会被子文件的写入顶掉。
         if "timestamps" in self.preserve:
@@ -396,6 +503,28 @@ class _State:
 
 
 # ---------- 路径小工具 ----------
+
+
+class _Plan(NamedTuple):
+    """一次 cp 调用的落点规划。
+
+    dest_trailing_sep 记的是「用户写的目标带不带尾分隔符」：
+    GNU 用它区分「目标是目录」与「目标是普通文件」，带尾分隔符时
+    目标必须是一个目录（已存在却不是目录就报 Not a directory）。
+    dest_raw 保留用户原样写的目标串，报错时按原样显示（GNU 也保留尾斜杠）。
+    """
+
+    sources: list[str]
+    dest: Path
+    dest_label: str
+    dest_raw: str
+    dest_is_dir: bool
+    dest_trailing_sep: bool
+
+
+def _ends_with_sep(text: str) -> bool:
+    """操作数是不是以路径分隔符结尾（GNU 靠它判断目标是不是目录）。"""
+    return text.endswith("/") or text.endswith("\\")
 
 
 def _resolve(cwd: Path, operand: str) -> Path:

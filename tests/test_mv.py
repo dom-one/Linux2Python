@@ -278,6 +278,31 @@ def test_interactive_wins_when_given_last(workdir):
     assert not (workdir / "a.txt").exists()
 
 
+def test_repeated_options_take_the_last_occurrence(workdir):
+    """GNU 里 -n -i -n 是 -n 赢：重复给时取最后一次出现，不是第一次。"""
+    code, _, err = run_mv(["-n", "-i", "-n", "a.txt", "b.txt"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert err == ""
+    assert (workdir / "b.txt").read_bytes() == b"old content\r\n"
+    assert (workdir / "a.txt").exists()
+
+
+def test_combined_short_options_keep_their_order(workdir):
+    """合并短选项 -ni 是 -i 赢，-in 是 -n 赢。"""
+    code, _, err = run_mv(["-ni", "a.txt", "b.txt"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert "覆盖" in err
+    assert not (workdir / "a.txt").exists()
+
+    # 上面那步把 a.txt 移走了，换一个还在的源来测 -in
+    (workdir / "c.txt").write_bytes(b"third\r\n")
+    code, _, err = run_mv(["-in", "c.txt", "bin.dat"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert err == ""
+    assert (workdir / "bin.dat").read_bytes() == bytes(range(256))
+    assert (workdir / "c.txt").exists()
+
+
 def test_backup_renames_the_old_target(workdir):
     code, _, _ = run_mv(["-b", "a.txt", "b.txt"], cwd=workdir)
     assert code == 0

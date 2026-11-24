@@ -14,6 +14,16 @@
 - -n 跳过已存在的文件、-u 只在源更新时才复制、-i 覆盖前问一句
 - -p / -a 保住源的时间戳；-S 在覆盖前把旧目标改名加后缀
 - --parents 在目标下还原源的路径层级，并自己建父目录
+
+本轮（tick #19）补的四组 GNU 对齐，38 组用例逐条一致
+（差分脚本 AI/脚本/_t1310_diff_cp_defects.py，负控制 _t1311_negctl_cp_defects.py）：
+
+- -i 与 -n 互相清掉对方，**后给的那个赢**，且重复给时取**最后一次**出现
+- --preserve 裸写等于 --preserve=all 且不吃后面的操作数；重复给是并集，
+  --no-preserve 从并集里减
+- 目标带尾斜杠时目标必须是目录；已存在却不是目录报 failed to access，
+  这条先于「多个源时目标必须是目录」
+- -T 与 --parents 冲突；--backup（-S）与 --no-clobber 冲突
 """
 
 import os
@@ -370,3 +380,165 @@ def test_no_target_directory_rejects_extra_operand(workdir):
     code, _, err = run_cp(["-T", "a.txt", "b.txt", "c.txt"], cwd=workdir)
     assert code == 2
     assert "多余的操作数" in err
+
+
+# ---------- -i 与 -n 的先后（GNU：后给的那个赢） ----------
+
+
+def test_no_clobber_then_interactive_interactive_wins(workdir):
+    """GNU 8.32 实测：-n -i 时 -i 赢，会照常提问并复制。"""
+    code, _, err = run_cp(["-n", "-i", "a.txt", "b.txt"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert "覆盖" in err
+    assert (workdir / "b.txt").read_bytes() == b"hello cp\r\nsecond line\r\n"
+
+
+def test_interactive_then_no_clobber_no_clobber_wins(workdir):
+    """GNU 8.32 实测：-i -n 时 -n 赢，不提问也不复制。"""
+    code, _, err = run_cp(["-i", "-n", "a.txt", "b.txt"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert err == ""
+    assert (workdir / "b.txt").read_bytes() == b"old content\r\n"
+
+
+def test_repeated_options_take_the_last_occurrence(workdir):
+    """GNU 8.32 实测：-n -i -n 是 -n 赢（取最后一次，不是第一次）。"""
+    code, _, err = run_cp(["-n", "-i", "-n", "a.txt", "b.txt"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert err == ""
+    assert (workdir / "b.txt").read_bytes() == b"old content\r\n"
+
+
+def test_combined_short_options_keep_their_order(workdir):
+    """合并短选项 -ni 是 -i 赢，-in 是 -n 赢。"""
+    code, _, err = run_cp(["-ni", "a.txt", "b.txt"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert "覆盖" in err
+    assert (workdir / "b.txt").read_bytes() == b"hello cp\r\nsecond line\r\n"
+
+    code, _, err = run_cp(["-in", "a.txt", "bin.dat"], cwd=workdir, stdin_text="y\n")
+    assert code == 0
+    assert err == ""
+    assert (workdir / "bin.dat").read_bytes() == bytes(range(256))
+
+
+# ---------- --preserve 的形态 ----------
+
+
+def test_bare_preserve_does_not_eat_the_operand(workdir):
+    """GNU 的 --preserve 是可选参数长选项：裸写等于 all，且不吃后面的操作数。"""
+    stamp = 1_000_000_000
+    os.utime(workdir / "a.txt", (stamp, stamp))
+
+    code, _, err = run_cp(["--preserve", "a.txt", "b.txt"], cwd=workdir)
+    assert code == 0
+    assert err == ""
+    assert (workdir / "b.txt").read_bytes() == b"hello cp\r\nsecond line\r\n"
+    assert int((workdir / "b.txt").stat().st_mtime) == stamp
+
+
+def test_repeated_preserve_is_a_union(workdir):
+    """重复给 --preserve 是并集：mode 与 timestamps 都保留。"""
+    stamp = 1_000_000_000
+    os.utime(workdir / "a.txt", (stamp, stamp))
+
+    code, _, _ = run_cp(
+        ["--preserve=mode", "--preserve=timestamps", "a.txt", "copy.txt"], cwd=workdir
+    )
+    assert code == 0
+    assert int((workdir / "copy.txt").stat().st_mtime) == stamp
+
+
+def test_no_preserve_subtracts_from_the_union(workdir):
+    """--no-preserve 从并集里减：减掉 timestamps 后时间戳不再保留。"""
+    stamp = 1_000_000_000
+    os.utime(workdir / "a.txt", (stamp, stamp))
+
+    code, _, _ = run_cp(
+        ["--preserve=all", "--no-preserve=timestamps", "a.txt", "copy.txt"], cwd=workdir
+    )
+    assert code == 0
+    assert int((workdir / "copy.txt").stat().st_mtime) != stamp
+
+
+# ---------- 目标带尾斜杠 ----------
+
+
+def test_trailing_slash_target_must_be_a_directory(workdir):
+    """GNU 8.32 实测：目标不存在且带尾斜杠时报 cannot create regular file。"""
+    code, _, err = run_cp(["a.txt", "nosuch/"], cwd=workdir)
+    assert code == 2
+    assert "不是目录" in err
+    assert not (workdir / "nosuch").exists()
+
+
+def test_trailing_slash_on_an_existing_file_is_refused(workdir):
+    code, _, err = run_cp(["a.txt", "b.txt/"], cwd=workdir)
+    assert code == 2
+    assert "无法访问" in err
+    assert "不是目录" in err
+
+
+def test_trailing_slash_on_an_existing_directory_is_fine(workdir):
+    code, _, err = run_cp(["a.txt", "destdir/"], cwd=workdir)
+    assert code == 0
+    assert err == ""
+    assert (workdir / "destdir" / "a.txt").read_bytes() == b"hello cp\r\nsecond line\r\n"
+
+
+def test_trailing_slash_directory_source_creates_the_directory(workdir):
+    """GNU 8.32 实测：-r 目录到 nosuch/ 时建出 nosuch/，里面放的是目录的内容。"""
+    code, _, err = run_cp(["-r", "dir1", "nosuch/"], cwd=workdir)
+    assert code == 0
+    assert err == ""
+    assert (workdir / "nosuch" / "inner.txt").read_bytes() == b"inner\r\n"
+    assert not (workdir / "nosuch" / "dir1").exists()
+
+
+def test_failed_to_access_is_reported_before_not_a_directory(workdir):
+    """GNU 的报错次序：failed to access 先于 target is not a directory。"""
+    code, _, err = run_cp(["a.txt", "bin.dat", "b.txt/"], cwd=workdir)
+    assert code == 2
+    assert "无法访问" in err
+    assert "b.txt/" in err
+
+
+def test_multiple_sources_with_missing_slash_target_is_not_a_directory(workdir):
+    """目标不存在且带尾斜杠、又有多个源时，GNU 报 target is not a directory。"""
+    code, _, err = run_cp(["a.txt", "bin.dat", "nosuch/"], cwd=workdir)
+    assert code == 2
+    assert "不是目录" in err
+    assert "nosuch/" in err
+
+
+# ---------- -T 与 --parents、--backup 与 --no-clobber ----------
+
+
+def test_no_target_directory_conflicts_with_parents(workdir):
+    code, _, err = run_cp(["-T", "--parents", "a.txt", "destdir"], cwd=workdir)
+    assert code == 2
+    assert "--parents" in err
+
+
+def test_parents_conflict_is_reported_after_missing_operand(workdir):
+    """GNU 的次序：先报缺操作数，再报 --parents 的冲突。"""
+    code, _, err = run_cp(["-T", "--parents"], cwd=workdir)
+    assert code == 2
+    assert "缺少文件操作数" in err
+
+
+def test_backup_and_no_clobber_are_mutually_exclusive(workdir):
+    """GNU 8.32 实测：-S 等于打开 --backup，与 --no-clobber 互斥。"""
+    code, _, err = run_cp(["-S", ".bak", "-n", "a.txt", "b.txt"], cwd=workdir)
+    assert code == 2
+    assert "--backup" in err
+    assert "--no-clobber" in err
+    assert (workdir / "b.txt").read_bytes() == b"old content\r\n"
+
+
+def test_backup_conflict_is_reported_before_missing_operand(workdir):
+    """GNU 的次序：互斥冲突先于缺操作数。"""
+    code, _, err = run_cp(["-S", ".bak", "-n"], cwd=workdir)
+    assert code == 2
+    assert "--backup" in err
+    assert "缺少文件操作数" not in err

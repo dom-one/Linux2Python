@@ -21,29 +21,10 @@ from pathlib import Path
 from ..context import RunContext
 from ..entry import command_prog
 from ..errors import UsageError
+from ..flags import FlagTracker, resolve_exclusive
 from ..registry import command
 
 _DEFAULT_SUFFIX = "~"
-
-
-class _FlagTracker(argparse.Action):
-    """布尔选项的记录器：把出现的先后顺序记进 namespace。
-
-    GNU 的 -i 与 -n 互相清掉对方，后给的那个赢（cp 与 mv 实测一致：
-    `-n -i` 会提示并照搬，`-i -n` 不提示也不搬）。
-    """
-
-    def __init__(self, option_strings, dest, **kwargs):
-        kwargs["nargs"] = 0
-        super().__init__(option_strings, dest, **kwargs)
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        order = getattr(namespace, "option_order", None)
-        if order is None:
-            order = []
-            setattr(namespace, "option_order", order)
-        order.append(self.dest)
-        setattr(namespace, self.dest, True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-i",
         "--interactive",
-        action=_FlagTracker,
+        action=FlagTracker,
         dest="interactive",
         default=False,
         help="覆盖已存在的目标前询问",
@@ -73,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-n",
         "--no-clobber",
-        action=_FlagTracker,
+        action=FlagTracker,
         dest="no_clobber",
         default=False,
         help="不覆盖已存在的目标",
@@ -130,16 +111,16 @@ class _State:
 
     @staticmethod
     def _resolve_overwrite_policy(args: argparse.Namespace) -> tuple[bool, bool]:
-        """-i 与 -n 互相清掉对方：GNU 里后给的那个赢。"""
-        interactive = bool(args.interactive)
-        no_clobber = bool(args.no_clobber)
-        order = getattr(args, "option_order", None) or []
-        if "interactive" in order and "no_clobber" in order:
-            if order.index("no_clobber") > order.index("interactive"):
-                interactive = False
-            else:
-                no_clobber = False
-        return interactive, no_clobber
+        """-i 与 -n 互相清掉对方：GNU 里后给的那个赢。
+
+        判据取「最后一次出现」（共享实现见 w2l/flags.py），所以
+        `-n -i -n` 是 -n 赢，与 GNU 实测一致。
+        """
+        policy = resolve_exclusive(
+            getattr(args, "option_order", None) or [],
+            {"interactive": bool(args.interactive), "no_clobber": bool(args.no_clobber)},
+        )
+        return policy["interactive"], policy["no_clobber"]
 
     # ---------- 操作数规划 ----------
 
