@@ -5,6 +5,7 @@
 -t/-S 排序、-r 反序、-F 类型标记、-R 递归分块、多操作数时文件先于目录块。
 """
 
+import json
 import os
 import re
 
@@ -227,3 +228,134 @@ def test_recursive_with_all_does_not_recurse_into_dot_entries(ls_tree):
     # 每一级目录都只出现一次，不会出现 ./sub/sub
     assert f"{ls_tree}/sub/sub" not in out
     assert f"{ls_tree}/sub:" in out
+
+
+# ---------- --json ----------
+
+
+def test_json_output_is_valid_json(ls_tree):
+    code, out, err = run_ls(["--json", str(ls_tree)])
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["command"] == "ls"
+    assert isinstance(payload["entries"], list)
+
+
+def test_json_entry_has_all_fields(ls_tree):
+    _, out, _ = run_ls(["--json", str(ls_tree)])
+    entry = json.loads(out)["entries"][0]
+    assert set(entry) == {
+        "name",
+        "path",
+        "type",
+        "size",
+        "mtime",
+        "mode",
+        "permissions",
+    }
+
+
+def test_json_size_matches_the_file_on_disk(ls_tree):
+    _, out, _ = run_ls(["--json", str(ls_tree)])
+    entries = {e["name"]: e for e in json.loads(out)["entries"]}
+    assert entries["gamma.log"]["size"] == 2048
+    assert entries["big.bin"]["size"] == 5000
+
+
+def test_json_type_distinguishes_dirs_from_files(ls_tree):
+    _, out, _ = run_ls(["--json", str(ls_tree)])
+    entries = {e["name"]: e for e in json.loads(out)["entries"]}
+    assert entries["sub"]["type"] == "directory"
+    assert entries["alpha.txt"]["type"] == "file"
+
+
+def test_json_permissions_follow_msys_convention(ls_tree):
+    _, out, _ = run_ls(["--json", str(ls_tree)])
+    entries = {e["name"]: e for e in json.loads(out)["entries"]}
+    assert entries["alpha.txt"]["permissions"] == "-rw-r--r--"
+    assert entries["alpha.txt"]["mode"] == "0644"
+    assert entries["sub"]["permissions"] == "drwxr-xr-x"
+
+
+def test_json_lists_same_entries_as_text_mode(ls_tree):
+    _, text_out, _ = run_ls([str(ls_tree)])
+    _, json_out, _ = run_ls(["--json", str(ls_tree)])
+    text_names = text_out.splitlines()
+    json_names = [e["name"] for e in json.loads(json_out)["entries"]]
+    assert json_names == text_names
+
+
+def test_json_name_is_basename_and_path_is_full(ls_tree):
+    _, out, _ = run_ls(["--json", str(ls_tree / "alpha.txt")])
+    entry = json.loads(out)["entries"][0]
+    assert entry["name"] == "alpha.txt"
+    assert entry["path"] == str(ls_tree / "alpha.txt").replace("\\", "/")
+
+
+def test_json_path_uses_forward_slashes(ls_tree):
+    _, out, _ = run_ls(["--json", str(ls_tree)])
+    for entry in json.loads(out)["entries"]:
+        assert "\\" not in entry["path"]
+
+
+def test_json_respects_sort_order(ls_tree):
+    # 时间戳要钉死：本机 mtime 精度约 15.6ms，同一 tick 里建的目录 mtime 会乱
+    for name in ("gamma.log", "big.bin", "run.bat", "empty", "sub"):
+        os.utime(ls_tree / name, (1_000_000, 1_000_000))
+    os.utime(ls_tree / "Beta.txt", (2_000_000, 2_000_000))
+    os.utime(ls_tree / "alpha.txt", (3_000_000, 3_000_000))
+    _, out, _ = run_ls(["--json", "-t", str(ls_tree)])
+    names = [e["name"] for e in json.loads(out)["entries"]]
+    assert names == [
+        "alpha.txt",
+        "Beta.txt",
+        "big.bin",
+        "empty",
+        "gamma.log",
+        "run.bat",
+        "sub",
+    ]
+
+
+def test_json_all_includes_dot_entries(ls_tree):
+    _, out, _ = run_ls(["--json", "-a", str(ls_tree)])
+    names = [e["name"] for e in json.loads(out)["entries"]]
+    assert names[0] == "."
+    assert names[1] == ".."
+
+
+def test_json_classify_does_not_pollute_the_name(ls_tree):
+    """-F 在文本模式给名字追加类型标记，JSON 里由 type 字段表达，name 必须保持干净。"""
+    _, out, _ = run_ls(["--json", "-F", str(ls_tree)])
+    entries = {e["name"]: e for e in json.loads(out)["entries"]}
+    assert "sub" in entries
+    assert entries["sub"]["type"] == "directory"
+
+
+def test_json_recursive_covers_subdirectories(ls_tree):
+    _, out, _ = run_ls(["--json", "-R", str(ls_tree)])
+    names = [e["name"] for e in json.loads(out)["entries"]]
+    assert "deep.txt" in names
+    assert "leaf.txt" in names
+
+
+def test_json_empty_directory_still_outputs_json(ls_tree):
+    code, out, err = run_ls(["--json", str(ls_tree / "empty")])
+    assert code == 1
+    assert json.loads(out)["entries"] == []
+    assert err == ""
+
+
+def test_json_missing_path_keeps_stdout_valid_json(ls_tree):
+    """错误走 stderr，stdout 必须仍然是合法 JSON。"""
+    code, out, err = run_ls(["--json", str(ls_tree / "nope")])
+    assert code == 2
+    assert json.loads(out)["entries"] == []
+    assert "nope" in err
+
+
+def test_json_exit_code_matches_text_mode(ls_tree):
+    for argv in ([str(ls_tree)], [str(ls_tree / "empty")], [str(ls_tree / "nope")]):
+        text_code, _, _ = run_ls(argv)
+        json_code, _, _ = run_ls(argv + ["--json"])
+        assert text_code == json_code

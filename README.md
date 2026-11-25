@@ -206,6 +206,7 @@ dmlinux grep -rn "TODO" E:\1\NULL\Windows-to-Linux
 | `-F` | 名称后追加类型标记（目录 `/`、可执行 `*`、链接 `@`） | `python main.py ls -F w2l/commands` |
 | `-R` | 递归列出子目录，每级目录带 `目录:` 标题 | `python main.py ls -R w2l/commands` |
 | `-1` | 每行一个条目（默认行为，保留该选项只为兼容习惯用法） | `python main.py ls -1 w2l` |
+| `--json` | 以 JSON 输出结果（机器可读，见下文「结构化输出」） | `python main.py ls --json w2l` |
 
 行为细节对齐 GNU ls：
 
@@ -222,6 +223,55 @@ Windows 环境下的差异（都是平台本身没有对应概念，不是实现
 - **权限位按 MSYS 的口径折算**：可写文件 `-rw-r--r--`、只读文件 `-r--r--r--`、目录 `drwxr-xr-x`、可执行文件 `-rwxr-xr-x`，与 GNU 的 `ls -l` 一致。（Windows 的 `os.stat` 合出来的是 0666/0777/0444，直接用会把组位与执行位显示错；折算逻辑在 `w2l/perms.py`。）
 - **没有 `total N` 汇总行**：Windows 的 `stat` 没有 `st_blocks`，拿不到 GNU 的块数口径。
 - **空目录返回退出码 1**（GNU 返回 0），遵循本项目统一的「无结果返回 1」约定，脚本里可直接用它判断目录是否为空。
+
+### 结构化输出（`--json`）
+
+`--json` 是本项目的扩展选项（GNU ls 没有），让结果能被脚本直接消费：
+
+```bash
+python main.py ls --json w2l
+```
+
+输出形状固定：
+
+```json
+{
+  "command": "ls",
+  "entries": [
+    {
+      "name": "cli.py",
+      "path": "w2l/cli.py",
+      "type": "file",
+      "size": 1234,
+      "mtime": 1764028800.123,
+      "mode": "0644",
+      "permissions": "-rw-r--r--"
+    }
+  ]
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `command` | 指令名，固定是 `"ls"` |
+| `entries` | 条目数组，顺序与文本模式完全一致 |
+| `name` | 条目名，**永远是路径的最后一段**（不带路径） |
+| `path` | 条目路径，父目录 + 名字，**分隔符统一用正斜杠**（Windows 上给的是反斜杠） |
+| `type` | 类型名：`file` / `directory` / `symlink` / `fifo` / `socket` / `other` |
+| `size` | 字节数，原始整数，**不受 `-h` 影响** |
+| `mtime` | 修改时间，Unix 时间戳（浮点，带亚秒） |
+| `mode` | 权限位的四位八进制写法（可写文件 `0644`），按 MSYS 口径折算 |
+| `permissions` | 权限列的符号写法（`-rw-r--r--`） |
+
+几条约定：
+
+- **错误走 stderr，stdout 永远是合法 JSON**：路径打不开时 stderr 报「无法访问」，stdout 仍是一份 `{"command": "ls", "entries": []}`，重定向到文件后可以直接喂给 `json.loads`。
+- **中文不转义**（`ensure_ascii=False`），输出按 UTF-8 写。
+- **`-F` 不污染 `name`**：类型标记在文本模式里是名字后缀（`sub/`），在 JSON 里由 `type` 字段表达，`name` 保持干净。
+- **`-l` 与 `-h` 不影响字段集**：JSON 恒定给出全部字段，用不用 `-l` 得到的结构一样。
+- **退出码与文本模式一致**：空目录返回 1，路径打不开返回 2。
+
+同一套口径由 `w2l/jsonout.py` 统一提供，后续指令接 `--json` 时直接复用。
 
 ## cat 能力清单
 
@@ -931,7 +981,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 - **并行搜索**：大目录树用 `multiprocessing` 分片并行，串行版本在大仓上是明显瓶颈，这是性能优化的第一优先级。`grep` 已完成（`-j/--jobs`，见上文「分片并行搜索」）；`find` / `du` / `tree` 还没做。
 - **共享模块收口**（已完成）：编码判定收在 `w2l/encoding.py`，cat/head/tail/wc/sed/awk-lite/grep 共用一份实现，改判定行为只改这一处（见下文「性能优化要点」第 2 条）。
 - **配置化**：`.w2lrc` 放默认选项（如默认递归、默认忽略目录、默认编码）。
-- **结构化输出**：`--json` 输出机器可读结果，便于和其他工具串联。
+- **结构化输出**：`--json` 输出机器可读结果，便于和其他工具串联。`ls` 已完成（见上文「结构化输出」）；`find` / `grep` / `du` / `tree` 还没接。
 - **Windows 特性适配**：长路径（>260 字符）、UNC 路径、符号链接（`mklink`）、权限位语义。
 
 **阶段四：分发**

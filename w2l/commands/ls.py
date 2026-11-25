@@ -16,6 +16,12 @@ Windows 环境下与 GNU 的必然差异（README 有完整说明）：
   可执行文件 0755），与 GNU 的 ls -l 一致；Windows 合成出来的 st_mode 是
   0666/0777/0444，直接用会把组位与执行位显示错
 - 空目录返回退出码 1（GNU 返回 0），遵循本项目「无结果返回 1」的约定
+
+--json 是本项目的扩展选项（GNU ls 没有）：
+
+- 输出 {"command": "ls", "entries": [...]}，每个条目带 name / path / type /
+  size / mtime / mode / permissions 七个字段
+- 错误照旧走 stderr，所以 stdout 永远是合法 JSON
 """
 
 from __future__ import annotations
@@ -27,9 +33,10 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from .. import jsonout
 from ..context import RunContext
 from ..entry import command_prog
-from ..perms import canonical_mode, format_perms
+from ..perms import canonical_mode, format_perms, mode_octal
 from ..registry import command
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -61,10 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
             f"  {prog} -lh tests\n"
             f"  {prog} -a .\n"
             f"  {prog} -R w2l\n"
+            f"  {prog} --json w2l\n"
         ),
     )
     parser.add_argument("--help", action="help", help="显示此帮助信息并退出")
     parser.add_argument("paths", nargs="*", help="要列出的目录或文件，默认当前目录")
+    parser.add_argument("--json", action="store_true", help="以 JSON 输出结果（机器可读）")
     parser.add_argument("-l", "--long", action="store_true", help="长格式：权限、大小、修改时间、名称")
     parser.add_argument("-a", "--all", action="store_true", help="显示所有条目，含 . 与 ..")
     parser.add_argument("-A", "--almost-all", action="store_true", help="显示隐藏条目，但不含 . 与 ..")
@@ -85,7 +94,7 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
     show_all = args.all
     almost_all = args.almost_all and not args.all
 
-    out = _Output(ctx)
+    out = _Output(ctx, json_mode=args.json)
     files: list[_Entry] = []
     directories: list[tuple[str, Path]] = []
 
@@ -104,7 +113,9 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
 
     # GNU 的顺序：普通文件先统一排序输出，目录随后各自成块
     if files:
-        out.block(_format_block(_sort_entries(files, args), args), len(files))
+        ordered = _sort_entries(files, args)
+        # 文件操作数本身就是一个路径，它自己就是条目的路径（不拼父目录）
+        out.block(_format_block(ordered, args), ordered, _records(ordered, None))
 
     show_header = len(operands) > 1
     for label, target in directories:
@@ -113,30 +124,113 @@ def ls(args: argparse.Namespace, ctx: RunContext) -> int:
         else:
             _list_directory(target, label, args, ctx, out, show_all, almost_all, show_header)
 
+    if args.json:
+        jsonout.write(ctx, {"command": "ls", "entries": out.records})
+
     if out.had_error:
         return 2
     return 0 if out.count else 1
 
 
 class _Output:
-    """收集输出状态：是否已经输出过内容（决定块之间要不要空行）、条目总数、是否出错。"""
+    """收集输出状态：是否已经输出过内容（决定块之间要不要空行）、条目总数、是否出错。
 
-    def __init__(self, ctx: RunContext) -> None:
+    JSON 模式不写文本，只把结构化记录攒起来，最后一次性输出。
+    """
+
+    def __init__(self, ctx: RunContext, json_mode: bool = False) -> None:
         self.ctx = ctx
+        self.json_mode = json_mode
         self.started = False
         self.count = 0
         self.had_error = False
+        self.records: list[dict] = []
 
-    def block(self, lines: list[str], entries: int) -> None:
+    def block(
+        self,
+        lines: list[str],
+        entries: list[_Entry],
+        records: list[dict] | None = None,
+    ) -> None:
         """输出一个块；除第一块外，块之间空一行，与 GNU 的分块格式一致。"""
         if not lines:
+            return
+        if self.json_mode:
+            self.records.extend(records or [])
+            self.count += len(entries)
             return
         if self.started:
             self.ctx.stdout.write("\n")
         for line in lines:
             self.ctx.stdout.write(line + "\n")
         self.started = True
-        self.count += entries
+        self.count += len(entries)
+
+
+def _records(entries: list[_Entry], parent: str | None) -> list[dict]:
+    """把条目转成 JSON 记录。
+
+    parent 为 None 表示条目本身就是命令行给的操作数（路径就是它自己）；
+    否则 parent 是所在目录的操作数路径，拼在名字前面。
+    """
+    records = []
+    for entry in entries:
+        if parent is None:
+            path = entry.name.replace("\\", "/")
+            name = _basename(entry.name)
+        else:
+            path = _entry_path(parent, entry.name)
+            name = entry.name
+        records.append(_json_record(entry, name, path))
+    return records
+
+
+def _basename(path: str) -> str:
+    """取路径的最后一段（正斜杠与反斜杠都算分隔符）。"""
+    normalized = path.replace("\\", "/").rstrip("/")
+    if not normalized:
+        return path
+    return normalized.rsplit("/", 1)[-1]
+
+
+def _entry_path(parent: str | None, name: str) -> str:
+    """拼出条目在 JSON 里的路径。
+
+    路径统一用正斜杠：Windows 上给的是反斜杠，转成正斜杠后同一份 JSON
+    在 Windows 与 Linux 上长得一样，消费方不用分支处理分隔符。
+    """
+    if parent is None:
+        return name.replace("\\", "/")
+    base = parent.replace("\\", "/")
+    if not base.endswith("/"):
+        base += "/"
+    if name == ".":
+        # "." 这个条目指向所在目录本身，不是它的子项
+        return base[:-1] if len(base) > 1 else base
+    return base + name
+
+
+def _json_record(entry: _Entry, name: str, path: str) -> dict:
+    """一条条目的 JSON 记录。
+
+    字段口径：
+    - name   条目名（永远是路径的最后一段，不含路径）
+    - path   条目路径，父目录 + 名字（正斜杠）
+    - type   类型名（file / directory / symlink ...）
+    - size   字节数（原始整数，不受 -h 影响）
+    - mtime  修改时间，Unix 时间戳（浮点，带亚秒）
+    - mode   权限位的四位八进制写法，按 MSYS 口径折算
+    - permissions 权限列的符号写法（-rw-r--r--）
+    """
+    return {
+        "name": name,
+        "path": path,
+        "type": jsonout.type_name(entry.mode),
+        "size": entry.size,
+        "mtime": entry.mtime,
+        "mode": mode_octal(canonical_mode(entry.mode)),
+        "permissions": format_perms(entry.mode),
+    }
 
 
 def _resolve(cwd: Path, operand: str) -> Path:
@@ -198,7 +292,7 @@ def _list_directory(
     lines = _format_block(ordered, args)
     if show_header:
         lines = [f"{label}:"] + lines
-    out.block(lines, len(ordered))
+    out.block(lines, ordered, _records(ordered, label))
 
 
 def _list_tree(
@@ -219,7 +313,11 @@ def _list_tree(
         return
 
     ordered = _sort_entries(entries, args)
-    out.block([f"{label}:"] + _format_block(ordered, args), len(ordered))
+    out.block(
+        [f"{label}:"] + _format_block(ordered, args),
+        ordered,
+        _records(ordered, label),
+    )
 
     for entry in ordered:
         if not stat.S_ISDIR(entry.mode):
