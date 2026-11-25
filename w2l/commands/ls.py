@@ -224,6 +224,10 @@ def _list_tree(
     for entry in ordered:
         if not stat.S_ISDIR(entry.mode):
             continue
+        # -a 会把 . 与 .. 也列进条目里，但它们不是子目录：
+        # . 递归回自己、.. 递归到上一级，两条都停不下来（GNU 也不往里递归）
+        if entry.name in (".", ".."):
+            continue
         _list_tree(root / entry.name, f"{label}/{entry.name}", args, ctx, out, show_all, almost_all)
 
 

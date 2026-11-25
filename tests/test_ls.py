@@ -213,3 +213,17 @@ def test_help_flag_exits_zero(capsys):
         run_ls(["--help"])
     assert excinfo.value.code == 0
     assert "列出目录内容" in capsys.readouterr().out
+
+
+def test_recursive_with_all_does_not_recurse_into_dot_entries(ls_tree):
+    """-a 会把 . 与 .. 列进条目里，但它们不是子目录。
+
+    以前这里是无限递归（. 递归回自己、.. 递归到上一级），撞上 RecursionError。
+    GNU ls -Ra 只把 . 与 .. 列出来，不往里递归。
+    """
+    code, out, err = run_ls(["-Ra", str(ls_tree)])
+    assert code == 0
+    assert err == ""
+    # 每一级目录都只出现一次，不会出现 ./sub/sub
+    assert f"{ls_tree}/sub/sub" not in out
+    assert f"{ls_tree}/sub:" in out
